@@ -3,7 +3,7 @@
 Coleção de extensões de navegador.
 
 ## Extensões
-
+- `anti-popup-megacine`: bloqueio de popups/redirects.
 - `anti-popup-redecanais`: bloqueio de popups/redirects.
 - `extension-instagram/ig-story-recorder`: recorder para stories do Instagram.
 - `liquid watche`: Liquid Glass Clock.
