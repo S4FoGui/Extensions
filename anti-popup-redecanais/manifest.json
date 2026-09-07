@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Anti-Popup & Anti-Redirect",
+  "version": "1.0.0",
+  "description": "Bloqueia popups, pop-unders, anúncios e redirecionamentos forçados em sites de streaming.",
+  "permissions": ["declarativeNetRequest", "webNavigation", "tabs", "storage", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.redecanais.in/*", "*://*.redecanais.gs/*", "*://*.redecanais.ac/*", "*://*.redecanais.tv/*", "*://*.redecanais.me/*", "*://*.redecanais.co/*", "*://*.redecanais.ws/*", "*://*.redecanais.link/*"],
+      "js": ["blocker.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "ruleset",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "action": {
+    "default_title": "Anti-Popup",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "128": "icon128.png"
+  }
+}

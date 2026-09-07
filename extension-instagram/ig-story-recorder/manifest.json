@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "IG Story Poster (Desktop)",
+  "version": "3.0.0",
+  "description": "Cria e publica Stories no Instagram direto do PC, com UI própria (sem depender do app mobile).",
+  "permissions": [],
+  "host_permissions": ["*://www.instagram.com/*"],
+  "action": { "default_title": "IG Story Poster" },
+  "content_scripts": [
+    {
+      "matches": ["*://www.instagram.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": { "128": "icons/icon128.png" }
+}

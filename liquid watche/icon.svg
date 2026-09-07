@@ -1,0 +1,127 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Glass morphism background -->
+    <filter id="glassBlur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="2"/>
+    </filter>
+    
+    <!-- Liquid glass gradient -->
+    <linearGradient id="glassGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:rgba(255,255,255,0.25);stop-opacity:1" />
+      <stop offset="50%" style="stop-color:rgba(255,255,255,0.1);stop-opacity:1" />
+      <stop offset="100%" style="stop-color:rgba(255,255,255,0.05);stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Clock face gradient -->
+    <radialGradient id="clockFace" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:rgba(255,255,255,0.15);stop-opacity:1" />
+      <stop offset="70%" style="stop-color:rgba(255,255,255,0.05);stop-opacity:1" />
+      <stop offset="100%" style="stop-color:rgba(0,0,0,0.1);stop-opacity:1" />
+    </radialGradient>
+    
+    <!-- Liquid highlight -->
+    <linearGradient id="liquidHighlight" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:rgba(255,255,255,0.4);stop-opacity:1" />
+      <stop offset="30%" style="stop-color:rgba(255,255,255,0.2);stop-opacity:1" />
+      <stop offset="100%" style="stop-color:rgba(255,255,255,0);stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Hand gradient -->
+    <linearGradient id="handGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0.9" />
+      <stop offset="100%" style="stop-color:#e0e0e0;stop-opacity:0.9" />
+    </linearGradient>
+    
+    <!-- Glow effect -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Inner shadow for depth -->
+    <filter id="innerShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feOffset dx="0" dy="2"/>
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="out"/>
+    </filter>
+  </defs>
+  
+  <!-- Outer glass container with rounded corners -->
+  <rect x="8" y="8" width="112" height="112" rx="24" ry="24" 
+        fill="url(#glassGradient)" 
+        stroke="rgba(255,255,255,0.3)" 
+        stroke-width="1.5"
+        filter="url(#glassBlur)"/>
+  
+  <!-- Inner glass layer for depth -->
+  <rect x="14" y="14" width="100" height="100" rx="18" ry="18" 
+        fill="rgba(255,255,255,0.03)" 
+        stroke="rgba(255,255,255,0.15)" 
+        stroke-width="0.5"/>
+  
+  <!-- Clock face circle -->
+  <circle cx="64" cy="64" r="42" 
+          fill="url(#clockFace)" 
+          stroke="rgba(255,255,255,0.2)" 
+          stroke-width="1"/>
+  
+  <!-- Liquid glass highlight on clock face -->
+  <ellipse cx="64" cy="52" rx="28" ry="18" 
+           fill="url(#liquidHighlight)" 
+           opacity="0.6"/>
+  
+  <!-- Hour markers -->
+  <g stroke="rgba(255,255,255,0.7)" stroke-width="1.5" stroke-linecap="round">
+    <line x1="64" y1="26" x2="64" y2="32"/>
+    <line x1="64" y1="96" x2="64" y2="102"/>
+    <line x1="26" y1="64" x2="32" y2="64"/>
+    <line x1="96" y1="64" x2="102" y2="64"/>
+    <line x1="38" y1="38" x2="43" y2="43"/>
+    <line x1="85" y1="85" x2="90" y2="90"/>
+    <line x1="38" y1="90" x2="43" y2="85"/>
+    <line x1="85" y1="38" x2="90" y2="43"/>
+  </g>
+  
+  <!-- Hour hand -->
+  <line x1="64" y1="64" x2="64" y2="38" 
+        stroke="url(#handGradient)" 
+        stroke-width="3.5" 
+        stroke-linecap="round"
+        filter="url(#glow)"/>
+  
+  <!-- Minute hand -->
+  <line x1="64" y1="64" x2="88" y2="64" 
+        stroke="url(#handGradient)" 
+        stroke-width="2.5" 
+        stroke-linecap="round"
+        filter="url(#glow)"/>
+  
+  <!-- Center dot -->
+  <circle cx="64" cy="64" r="4" 
+          fill="#ffffff" 
+          opacity="0.9"/>
+  
+  <!-- Center dot inner -->
+  <circle cx="64" cy="64" r="2" 
+          fill="rgba(0,0,0,0.3)"/>
+  
+  <!-- Liquid droplet accent (top right) -->
+  <g transform="translate(90, 22)">
+    <path d="M0,0 Q6,-6 12,0 Q6,6 0,0 Q0,-4 0,0" 
+          fill="rgba(255,255,255,0.3)" 
+          stroke="rgba(255,255,255,0.5)" 
+          stroke-width="0.5"/>
+    <ellipse cx="5" cy="-2" rx="2" ry="1" fill="rgba(255,255,255,0.6)"/>
+  </g>
+  
+  <!-- Small sparkle -->
+  <g transform="translate(28, 28)">
+    <line x1="0" y1="-4" x2="0" y2="4" stroke="rgba(255,255,255,0.8)" stroke-width="1" stroke-linecap="round"/>
+    <line x1="-4" y1="0" x2="4" y2="0" stroke="rgba(255,255,255,0.8)" stroke-width="1" stroke-linecap="round"/>
+    <line x1="-3" y1="-3" x2="3" y2="3" stroke="rgba(255,255,255,0.5)" stroke-width="0.5" stroke-linecap="round"/>
+    <line x1="-3" y1="3" x2="3" y2="-3" stroke="rgba(255,255,255,0.5)" stroke-width="0.5" stroke-linecap="round"/>
+  </g>
+</svg>

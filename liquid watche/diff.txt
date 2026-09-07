@@ -1,0 +1,556 @@
+diff --git a/content.js b/content.js
+new file mode 100644
+index 0000000..e7330bf
+--- /dev/null
++++ b/content.js
+@@ -0,0 +1,174 @@
++(function () {
++  // Run only in the top-level frame to avoid duplicate injections in iframes
++  if (window !== window.top) {
++    return;
++  }
++
++  // ── Configurações ─────────────────────────────────────
++  const TIMEZONE = 'America/Fortaleza';
++  const Z_INDEX = 2147483647; // máximo seguro para ficar acima de quase tudo
++  const ID = 'lg-clock-container';
++
++  // Detecta se estamos no YouTube ou se há um <video> na página
++  const IS_YOUTUBE = location.hostname.includes('youtube.com');
++  const HAS_VIDEO = !!document.querySelector('video');
++  // Se for YouTube ou houver video, posicionamos no topo direito para não cobrir controles
++  const SHOULD_TOP_RIGHT = IS_YOUTUBE || HAS_VIDEO;
++
++  // ── Criação do elemento ───────────────────────────────
++  function createClock() {
++    if (document.getElementById(ID)) return null;
++
++    const container = document.createElement('div');
++    container.id = ID;
++    container.style.position = 'fixed';
++    // Posicionamento condicional
++    if (SHOULD_TOP_RIGHT) {
++      container.style.top = '20px';
++      container.style.right = '20px';
++    } else {
++      // padrão: canto inferior direito
++      container.style.bottom = '20px';
++      container.style.right = '20px';
++    }
++    container.style.zIndex = Z_INDEX;
++    container.style.fontFamily = '"Segoe UI", "SF Pro Display", -apple-system, BlinkMacSystemFont, sans-serif';
++    container.style.userSelect = 'none';
++    container.style.cursor = 'default';
++    container.style.pointerEvents = 'auto';
++    container.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
++    container.style.opacity = '1';
++
++    const clock = document.createElement('div');
++    clock.id = 'lg-clock';
++    clock.style.background = 'rgba(255,255,255,0.04)';
++    clock.style.backdropFilter = 'blur(8px) saturate(120%)';
++    clock.style.WebkitBackdropFilter = 'blur(8px) saturate(120%)';
++    clock.style.border = '1px solid rgba(255,255,255,0.08)';
++    clock.style.borderRadius = '16px';
++    clock.style.padding = '10px 18px';
++    clock.style.color = 'rgba(255,255,255,0.65)';
++    clock.style.fontSize = '24px';
++    clock.style.fontWeight = '300';
++    clock.style.letterSpacing = '1px';
++    clock.style.textShadow = '0 1px 4px rgba(0,0,0,0.2)';
++    clock.style.display = 'flex';
++    clock.style.alignItems = 'center';
++    clock.style.gap = '5px';
++    clock.style.boxShadow = '0 1px 6px rgba(0,0,0,0.08), 0 0 1px rgba(255,255,255,0.03) inset';
++
++    clock.innerHTML = `
++      <span id="lg-time"></span>
++      <span class="ampm" id="lg-ampm"></span>
++      <span class="date" id="lg-date"></span>
++    `;
++
++    // ampm e date styling
++    const style = document.createElement('style');
++    style.textContent = `
++      #lg-clock .ampm { font-size:11px; font-weight:400; opacity:0.6; letter-spacing:1px; margin-top:4px; }
++      #lg-clock .date { font-size:10px; font-weight:300; opacity:0.5; position:absolute; bottom:-16px; right:0; letter-spacing:0.5px; white-space:nowrap; }
++      #lg-clock-container.dark #lg-clock { background:rgba(0,0,0,0.05); border-color:rgba(255,255,255,0.04); color:rgba(255,255,255,0.65); }
++    `;
++    container.appendChild(style);
++    container.appendChild(clock);
++    return container;
++  }
++
++  // ── Atualização do relógio ───────────────────────────
++  function updateClock() {
++    const now = new Date();
++    const opts = { timeZone: TIMEZONE, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true };
++    const parts = new Intl.DateTimeFormat('pt-BR', opts).formatToParts(now);
++
++    let time = '';
++    let ampm = '';
++    for (const p of parts) {
++      if (p.type === 'hour') time += p.value;
++      else if (p.type === 'minute') time += ':' + p.value;
++      else if (p.type === 'second') time += ':' + p.value;
++      else if (p.type === 'dayPeriod') ampm = p.value.toUpperCase();
++    }
++
++    const dateOpts = { timeZone: TIMEZONE, weekday: 'short', day: 'numeric', month: 'short' };
++    const dateStr = new Intl.DateTimeFormat('pt-BR', dateOpts).format(now);
++
++    const timeEl = document.getElementById('lg-time');
++    const ampmEl = document.getElementById('lg-ampm');
++    const dateEl = document.getElementById('lg-date');
++    if (timeEl) timeEl.textContent = time;
++    if (ampmEl) ampmEl.textContent = ampm;
++    if (dateEl) dateEl.textContent = dateStr;
++  }
++
++  // ── Detecção de modo escuro ─────────────────────────
++  function detectDarkMode() {
++    const container = document.getElementById(ID);
++    if (!container) return;
++    const bg = window.getComputedStyle(document.body).backgroundColor;
++    const rgb = bg.match(/\d+/g);
++    if (rgb && rgb.length >= 3) {
++      const brightness = (parseInt(rgb[0]) * 299 + parseInt(rgb[1]) * 587 + parseInt(rgb[2]) * 114) / 1000;
++      container.classList.toggle('dark', brightness < 128);
++    } else {
++      container.classList.remove('dark');
++    }
++  }
++
++  // ── Inicialização e observers ───────────────────────
++  function init() {
++    // insere o relógio (se ainda não existir)
++    let container = createClock();
++    if (container) {
++      // tenta inserir no body; se body não existir, usa documentElement
++      const target = document.body || document.documentElement;
++      target.appendChild(container);
++      updateClock();
++      detectDarkMode();
++    }
++
++    // atualiza a cada segundo
++    setInterval(updateClock, 1000);
++
++    // observar mudanças no DOM para reinjetar se removido (SPA)
++    const bodyObserver = new MutationObserver(() => {
++      if (!document.getElementById(ID)) {
++        const container = createClock();
++        if (container) {
++          const target = document.body || document.documentElement;
++          target.appendChild(container);
++          updateClock();
++          detectDarkMode();
++        }
++      }
++    });
++    bodyObserver.observe(document.body || document.documentElement, { childList: true, subtree: true });
++
++    // observar mudanças de atributos (classe/style) para tema escuro e redimensionamento
++    const styleObserver = new MutationObserver(detectDarkMode);
++    styleObserver.observe(document.body || document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
++
++    // YouTube specific navigation event
++    window.addEventListener('yt-navigate-finish', () => {
++      if (!document.getElementById(ID)) {
++        const container = createClock();
++        if (container) {
++          const target = document.body || document.documentElement;
++          target.appendChild(container);
++          updateClock();
++          detectDarkMode();
++        }
++      }
++    });
++
++    // também verifica ao redimensionar (algumas SPAs mudam layout)
++    window.addEventListener('resize', detectDarkMode);
++  }
++
++  // ── Executa init ─────────────────────────────────────
++  if (document.readyState === 'loading') {
++    document.addEventListener('DOMContentLoaded', init);
++  } else {
++    init();
++  }
++})();
+\ No newline at end of file
+diff --git a/diff.txt b/diff.txt
+new file mode 100644
+index 0000000..019dedb
+--- /dev/null
++++ b/diff.txt
+@@ -0,0 +1,275 @@
++diff --git a/content.js b/content.js
++new file mode 100644
++index 0000000..e7330bf
++--- /dev/null
+++++ b/content.js
++@@ -0,0 +1,174 @@
+++(function () {
+++  // Run only in the top-level frame to avoid duplicate injections in iframes
+++  if (window !== window.top) {
+++    return;
+++  }
+++
+++  // ── Configurações ─────────────────────────────────────
+++  const TIMEZONE = 'America/Fortaleza';
+++  const Z_INDEX = 2147483647; // máximo seguro para ficar acima de quase tudo
+++  const ID = 'lg-clock-container';
+++
+++  // Detecta se estamos no YouTube ou se há um <video> na página
+++  const IS_YOUTUBE = location.hostname.includes('youtube.com');
+++  const HAS_VIDEO = !!document.querySelector('video');
+++  // Se for YouTube ou houver video, posicionamos no topo direito para não cobrir controles
+++  const SHOULD_TOP_RIGHT = IS_YOUTUBE || HAS_VIDEO;
+++
+++  // ── Criação do elemento ───────────────────────────────
+++  function createClock() {
+++    if (document.getElementById(ID)) return null;
+++
+++    const container = document.createElement('div');
+++    container.id = ID;
+++    container.style.position = 'fixed';
+++    // Posicionamento condicional
+++    if (SHOULD_TOP_RIGHT) {
+++      container.style.top = '20px';
+++      container.style.right = '20px';
+++    } else {
+++      // padrão: canto inferior direito
+++      container.style.bottom = '20px';
+++      container.style.right = '20px';
+++    }
+++    container.style.zIndex = Z_INDEX;
+++    container.style.fontFamily = '"Segoe UI", "SF Pro Display", -apple-system, BlinkMacSystemFont, sans-serif';
+++    container.style.userSelect = 'none';
+++    container.style.cursor = 'default';
+++    container.style.pointerEvents = 'auto';
+++    container.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+++    container.style.opacity = '1';
+++
+++    const clock = document.createElement('div');
+++    clock.id = 'lg-clock';
+++    clock.style.background = 'rgba(255,255,255,0.04)';
+++    clock.style.backdropFilter = 'blur(8px) saturate(120%)';
+++    clock.style.WebkitBackdropFilter = 'blur(8px) saturate(120%)';
+++    clock.style.border = '1px solid rgba(255,255,255,0.08)';
+++    clock.style.borderRadius = '16px';
+++    clock.style.padding = '10px 18px';
+++    clock.style.color = 'rgba(255,255,255,0.65)';
+++    clock.style.fontSize = '24px';
+++    clock.style.fontWeight = '300';
+++    clock.style.letterSpacing = '1px';
+++    clock.style.textShadow = '0 1px 4px rgba(0,0,0,0.2)';
+++    clock.style.display = 'flex';
+++    clock.style.alignItems = 'center';
+++    clock.style.gap = '5px';
+++    clock.style.boxShadow = '0 1px 6px rgba(0,0,0,0.08), 0 0 1px rgba(255,255,255,0.03) inset';
+++
+++    clock.innerHTML = `
+++      <span id="lg-time"></span>
+++      <span class="ampm" id="lg-ampm"></span>
+++      <span class="date" id="lg-date"></span>
+++    `;
+++
+++    // ampm e date styling
+++    const style = document.createElement('style');
+++    style.textContent = `
+++      #lg-clock .ampm { font-size:11px; font-weight:400; opacity:0.6; letter-spacing:1px; margin-top:4px; }
+++      #lg-clock .date { font-size:10px; font-weight:300; opacity:0.5; position:absolute; bottom:-16px; right:0; letter-spacing:0.5px; white-space:nowrap; }
+++      #lg-clock-container.dark #lg-clock { background:rgba(0,0,0,0.05); border-color:rgba(255,255,255,0.04); color:rgba(255,255,255,0.65); }
+++    `;
+++    container.appendChild(style);
+++    container.appendChild(clock);
+++    return container;
+++  }
+++
+++  // ── Atualização do relógio ───────────────────────────
+++  function updateClock() {
+++    const now = new Date();
+++    const opts = { timeZone: TIMEZONE, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true };
+++    const parts = new Intl.DateTimeFormat('pt-BR', opts).formatToParts(now);
+++
+++    let time = '';
+++    let ampm = '';
+++    for (const p of parts) {
+++      if (p.type === 'hour') time += p.value;
+++      else if (p.type === 'minute') time += ':' + p.value;
+++      else if (p.type === 'second') time += ':' + p.value;
+++      else if (p.type === 'dayPeriod') ampm = p.value.toUpperCase();
+++    }
+++
+++    const dateOpts = { timeZone: TIMEZONE, weekday: 'short', day: 'numeric', month: 'short' };
+++    const dateStr = new Intl.DateTimeFormat('pt-BR', dateOpts).format(now);
+++
+++    const timeEl = document.getElementById('lg-time');
+++    const ampmEl = document.getElementById('lg-ampm');
+++    const dateEl = document.getElementById('lg-date');
+++    if (timeEl) timeEl.textContent = time;
+++    if (ampmEl) ampmEl.textContent = ampm;
+++    if (dateEl) dateEl.textContent = dateStr;
+++  }
+++
+++  // ── Detecção de modo escuro ─────────────────────────
+++  function detectDarkMode() {
+++    const container = document.getElementById(ID);
+++    if (!container) return;
+++    const bg = window.getComputedStyle(document.body).backgroundColor;
+++    const rgb = bg.match(/\d+/g);
+++    if (rgb && rgb.length >= 3) {
+++      const brightness = (parseInt(rgb[0]) * 299 + parseInt(rgb[1]) * 587 + parseInt(rgb[2]) * 114) / 1000;
+++      container.classList.toggle('dark', brightness < 128);
+++    } else {
+++      container.classList.remove('dark');
+++    }
+++  }
+++
+++  // ── Inicialização e observers ───────────────────────
+++  function init() {
+++    // insere o relógio (se ainda não existir)
+++    let container = createClock();
+++    if (container) {
+++      // tenta inserir no body; se body não existir, usa documentElement
+++      const target = document.body || document.documentElement;
+++      target.appendChild(container);
+++      updateClock();
+++      detectDarkMode();
+++    }
+++
+++    // atualiza a cada segundo
+++    setInterval(updateClock, 1000);
+++
+++    // observar mudanças no DOM para reinjetar se removido (SPA)
+++    const bodyObserver = new MutationObserver(() => {
+++      if (!document.getElementById(ID)) {
+++        const container = createClock();
+++        if (container) {
+++          const target = document.body || document.documentElement;
+++          target.appendChild(container);
+++          updateClock();
+++          detectDarkMode();
+++        }
+++      }
+++    });
+++    bodyObserver.observe(document.body || document.documentElement, { childList: true, subtree: true });
+++
+++    // observar mudanças de atributos (classe/style) para tema escuro e redimensionamento
+++    const styleObserver = new MutationObserver(detectDarkMode);
+++    styleObserver.observe(document.body || document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
+++
+++    // YouTube specific navigation event
+++    window.addEventListener('yt-navigate-finish', () => {
+++      if (!document.getElementById(ID)) {
+++        const container = createClock();
+++        if (container) {
+++          const target = document.body || document.documentElement;
+++          target.appendChild(container);
+++          updateClock();
+++          detectDarkMode();
+++        }
+++      }
+++    });
+++
+++    // também verifica ao redimensionar (algumas SPAs mudam layout)
+++    window.addEventListener('resize', detectDarkMode);
+++  }
+++
+++  // ── Executa init ─────────────────────────────────────
+++  if (document.readyState === 'loading') {
+++    document.addEventListener('DOMContentLoaded', init);
+++  } else {
+++    init();
+++  }
+++})();
++\ No newline at end of file
++diff --git a/manifest.json b/manifest.json
++new file mode 100644
++index 0000000..56330b1
++--- /dev/null
+++++ b/manifest.json
++@@ -0,0 +1,19 @@
+++{
+++  "manifest_version": 3,
+++  "name": "Liquid Glass Clock",
+++  "version": "1.0",
+++  "description": "Relógio transparente estilo liquid glass no canto inferior direito",
+++  "permissions": ["storage"],
+++  "content_scripts": [
+++    {
+++      "matches": ["<all_urls>"],
+++      "all_frames": true,
+++      "js": ["content.js"],
+++      "css": ["styles.css"],
+++      "run_at": "document_idle"
+++    }
+++  ],
+++  "action": {
+++    "default_title": "Liquid Glass Clock"
+++  }
+++}
++\ No newline at end of file
++diff --git a/styles.css b/styles.css
++new file mode 100644
++index 0000000..1657f23
++--- /dev/null
+++++ b/styles.css
++@@ -0,0 +1,61 @@
+++#lg-clock-container {
+++  position: fixed;
+++  bottom: 20px;
+++  right: 20px;
+++  z-index: 2147483647;
+++  font-family: 'Segoe UI', 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
+++  user-select: none;
+++  cursor: default;
+++  pointer-events: auto;
+++  transition: opacity 0.3s ease, transform 0.3s ease;
+++}
+++
+++#lg-clock-container:hover {
+++  transform: scale(1.05);
+++}
+++
+++#lg-clock {
+++  background: rgba(255, 255, 255, 0.04);
+++  backdrop-filter: blur(8px) saturate(120%);
+++  -webkit-backdrop-filter: blur(8px) saturate(120%);
+++  border: 1px solid rgba(255, 255, 255, 0.08);
+++  border-radius: 16px;
+++  padding: 12px 22px;
+++  color: rgba(255, 255, 255, 0.7);
+++  font-size: 28px;
+++  font-weight: 300;
+++  letter-spacing: 2px;
+++  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+++  display: flex;
+++  align-items: center;
+++  gap: 6px;
+++  box-shadow:
+++    0 2px 12px rgba(0, 0, 0, 0.08),
+++    0 1px 1px rgba(255, 255, 255, 0.03) inset;
+++}
+++
+++#lg-clock .ampm {
+++  font-size: 12px;
+++  font-weight: 400;
+++  opacity: 0.6;
+++  letter-spacing: 1px;
+++  margin-top: 8px;
+++}
+++
+++#lg-clock .date {
+++  font-size: 11px;
+++  font-weight: 300;
+++  opacity: 0.5;
+++  position: absolute;
+++  bottom: -18px;
+++  right: 0;
+++  letter-spacing: 0.5px;
+++  white-space: nowrap;
+++}
+++
+++/* Tema escuro automático */
+++#lg-clock-container.dark #lg-clock {
+++  background: rgba(0, 0, 0, 0.06);
+++  border-color: rgba(255, 255, 255, 0.04);
+++  color: rgba(255, 255, 255, 0.7);
+++}
++\ No newline at end of file
+diff --git a/manifest.json b/manifest.json
+new file mode 100644
+index 0000000..56330b1
+--- /dev/null
++++ b/manifest.json
+@@ -0,0 +1,19 @@
++{
++  "manifest_version": 3,
++  "name": "Liquid Glass Clock",
++  "version": "1.0",
++  "description": "Relógio transparente estilo liquid glass no canto inferior direito",
++  "permissions": ["storage"],
++  "content_scripts": [
++    {
++      "matches": ["<all_urls>"],
++      "all_frames": true,
++      "js": ["content.js"],
++      "css": ["styles.css"],
++      "run_at": "document_idle"
++    }
++  ],
++  "action": {
++    "default_title": "Liquid Glass Clock"
++  }
++}
+\ No newline at end of file
+diff --git a/styles.css b/styles.css
+new file mode 100644
+index 0000000..1657f23
+--- /dev/null
++++ b/styles.css
+@@ -0,0 +1,61 @@
++#lg-clock-container {
++  position: fixed;
++  bottom: 20px;
++  right: 20px;
++  z-index: 2147483647;
++  font-family: 'Segoe UI', 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
++  user-select: none;
++  cursor: default;
++  pointer-events: auto;
++  transition: opacity 0.3s ease, transform 0.3s ease;
++}
++
++#lg-clock-container:hover {
++  transform: scale(1.05);
++}
++
++#lg-clock {
++  background: rgba(255, 255, 255, 0.04);
++  backdrop-filter: blur(8px) saturate(120%);
++  -webkit-backdrop-filter: blur(8px) saturate(120%);
++  border: 1px solid rgba(255, 255, 255, 0.08);
++  border-radius: 16px;
++  padding: 12px 22px;
++  color: rgba(255, 255, 255, 0.7);
++  font-size: 28px;
++  font-weight: 300;
++  letter-spacing: 2px;
++  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
++  display: flex;
++  align-items: center;
++  gap: 6px;
++  box-shadow:
++    0 2px 12px rgba(0, 0, 0, 0.08),
++    0 1px 1px rgba(255, 255, 255, 0.03) inset;
++}
++
++#lg-clock .ampm {
++  font-size: 12px;
++  font-weight: 400;
++  opacity: 0.6;
++  letter-spacing: 1px;
++  margin-top: 8px;
++}
++
++#lg-clock .date {
++  font-size: 11px;
++  font-weight: 300;
++  opacity: 0.5;
++  position: absolute;
++  bottom: -18px;
++  right: 0;
++  letter-spacing: 0.5px;
++  white-space: nowrap;
++}
++
++/* Tema escuro automático */
++#lg-clock-container.dark #lg-clock {
++  background: rgba(0, 0, 0, 0.06);
++  border-color: rgba(255, 255, 255, 0.04);
++  color: rgba(255, 255, 255, 0.7);
++}
+\ No newline at end of file
