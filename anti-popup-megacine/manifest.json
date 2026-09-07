@@ -1,0 +1,114 @@
+{
+  "manifest_version": 3,
+  "name": "Anti-Popup & Anti-Redirect",
+  "version": "1.2.2",
+  "description": "Bloqueia popups, pop-unders, anúncios e redirecionamentos forçados em sites de streaming.",
+  "minimum_chrome_version": "111",
+  "permissions": ["declarativeNetRequest", "webNavigation", "tabs", "storage", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://megacine.quest/*",
+        "*://*.megacine.quest/*",
+        "*://viewplayer.online/*",
+        "*://*.viewplayer.online/*",
+        "*://redecanais.in/*",
+        "*://*.redecanais.in/*",
+        "*://redecanais.gs/*",
+        "*://*.redecanais.gs/*",
+        "*://redecanais.ac/*",
+        "*://*.redecanais.ac/*",
+        "*://redecanais.tv/*",
+        "*://*.redecanais.tv/*",
+        "*://redecanais.me/*",
+        "*://*.redecanais.me/*",
+        "*://redecanais.co/*",
+        "*://*.redecanais.co/*",
+        "*://redecanais.ws/*",
+        "*://*.redecanais.ws/*",
+        "*://redecanais.link/*",
+        "*://*.redecanais.link/*"
+      ],
+      "js": ["blocker-main.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN",
+      "match_origin_as_fallback": true
+    },
+    {
+      "matches": [
+        "*://megacine.quest/*",
+        "*://*.megacine.quest/*",
+        "*://viewplayer.online/*",
+        "*://*.viewplayer.online/*",
+        "*://redecanais.in/*",
+        "*://*.redecanais.in/*",
+        "*://redecanais.gs/*",
+        "*://*.redecanais.gs/*",
+        "*://redecanais.ac/*",
+        "*://*.redecanais.ac/*",
+        "*://redecanais.tv/*",
+        "*://*.redecanais.tv/*",
+        "*://redecanais.me/*",
+        "*://*.redecanais.me/*",
+        "*://redecanais.co/*",
+        "*://*.redecanais.co/*",
+        "*://redecanais.ws/*",
+        "*://*.redecanais.ws/*",
+        "*://redecanais.link/*",
+        "*://*.redecanais.link/*"
+      ],
+      "js": ["blocker.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_origin_as_fallback": true
+    },
+    {
+      "matches": [
+        "*://abyssplayer.com/*",
+        "*://*.abyssplayer.com/*",
+        "*://abyss.to/*",
+        "*://*.abyss.to/*",
+        "*://megaembed.link/*",
+        "*://*.megaembed.link/*",
+        "*://bysebuho.com/*",
+        "*://*.bysebuho.com/*",
+        "*://embedder.net/*",
+        "*://*.embedder.net/*",
+        "*://warezcdn.net/*",
+        "*://*.warezcdn.net/*",
+        "*://superembeds.com/*",
+        "*://*.superembeds.com/*",
+        "*://superflixapi.top/*",
+        "*://*.superflixapi.top/*",
+        "*://voe.sx/*",
+        "*://*.voe.sx/*"
+      ],
+      "js": ["provider-shim.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN",
+      "match_origin_as_fallback": true
+    }
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "ruleset",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "action": {
+    "default_title": "Anti-Popup",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "128": "icon128.png"
+  }
+}
