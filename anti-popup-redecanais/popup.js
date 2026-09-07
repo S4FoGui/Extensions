@@ -1,12 +1,14 @@
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-  if (!tabs[0]) return;
-  const id = tabs[0].id;
-  chrome.scripting.executeScript({
-    target: { tabId: id, allFrames: false },
-    func: () => (typeof chrome?.runtime?.lastError === 'undefined' ? 0 : chrome.runtime.lastError),
-  }, (results) => {
-    try {
-      document.getElementById("n").textContent = "1";
-    } catch (e) {}
+  const el = document.getElementById("n");
+  if (!tabs[0]) {
+    el.textContent = "0";
+    return;
+  }
+  chrome.runtime.sendMessage({ type: "getCount", tabId: tabs[0].id }, (res) => {
+    if (chrome.runtime.lastError) {
+      el.textContent = "0";
+      return;
+    }
+    el.textContent = String((res && res.count) || 0);
   });
 });

@@ -1,21 +1,12 @@
-// Service worker: carrega regras declarativeNetRequest, conta bloqueios.
-
-// Carrega regras do arquivo rules.json
-chrome.runtime.onInstalled.addListener(({ reason }) => {
-  if (reason === "install") {
-    fetch(chrome.runtime.getURL("rules.json"))
-      .then((r) => r.json())
-      .then((rules) => {
-        chrome.declarativeNetRequest.updateDynamicRules({
-          removeRuleIds: [],
-          addRules: rules,
-        });
-      })
-      .catch((e) => console.error("carregar regras:", e));
-  }
-});
+// Service worker: conta bloqueios.
+// Nota: rules.json já é carregado como static ruleset via manifest.json
+// (declarative_net_request.rule_resources), então não é necessário
+// recarregá-lo aqui como dynamic rules — evita duplicidade de regras.
 
 const counts = {}; // tabId -> número
+const lastGesture = {};   // tabId -> timestamp do último clique confiável
+const lastGoodUrl = {};   // tabId -> última URL boa dentro do site protegido
+const GESTURE_MS = 1500;
 
 function setBadge(tabId) {
   const n = counts[tabId] || 0;
@@ -23,11 +14,18 @@ function setBadge(tabId) {
   chrome.action.setBadgeBackgroundColor({ tabId, color: "#e11d48" });
 }
 
-chrome.runtime.onMessage.addListener((msg, sender) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "blocked" && sender.tab) {
     const id = sender.tab.id;
     counts[id] = (counts[id] || 0) + 1;
     setBadge(id);
+    return;
+  }
+  if (msg && msg.type === "getCount") {
+    // Chamado pelo popup.js, que não tem sender.tab (roda fora de content script)
+    const tabId = msg.tabId;
+    sendResponse({ count: counts[tabId] || 0 });
+    return true; // resposta assíncrona
   }
 });
 
@@ -51,6 +49,12 @@ chrome.tabs.onCreated.addListener((tab) => {
   chrome.tabs.get(tab.openerTabId, (opener) => {
     if (chrome.runtime.lastError || !opener || !opener.url) return;
     if (!PROTECTED.test(opener.url)) return;
+
+    // Se o usuário acabou de clicar/interagir de verdade (Ctrl+clique, "abrir
+    // em nova aba" etc.), não fechamos: é uma aba legítima, não um pop-up.
+    const comGestoReal = Date.now() - (lastGesture[opener.id] || 0) < GESTURE_MS;
+    if (comGestoReal) return;
+
     const url = tab.pendingUrl || tab.url || "";
     // Se a nova aba não é do mesmo site, é pop-up de anúncio -> fecha
     if (url && !PROTECTED.test(url) && !url.startsWith("chrome://")) {
@@ -65,10 +69,6 @@ chrome.tabs.onCreated.addListener((tab) => {
 // O Chrome não deixa o content script blindar `window.location` (é
 // não-configurável), então aqui vigiamos a aba principal: se ela sair do site
 // protegido para um domínio externo SEM um clique real recente, voltamos atrás.
-
-const lastGesture = {};   // tabId -> timestamp do último clique confiável
-const lastGoodUrl = {};   // tabId -> última URL boa dentro do site protegido
-const GESTURE_MS = 1500;
 
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg && msg.type === "gesture" && sender.tab) {

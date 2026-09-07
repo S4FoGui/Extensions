@@ -204,9 +204,17 @@
   );
 
   /* ---------------- 7. Remove overlays invisíveis que capturam o 1º clique --------------- */
-  const killOverlays = () => {
+  const AD_IFRAME_SEL =
+    "iframe[src*='ads'],iframe[src*='popads'],iframe[src*='propeller'],iframe[src*='exoclick'],iframe[src*='juicyads'],iframe[src*='adsterra'],iframe[src*='hilltop'],iframe[src*='doubleclick'],iframe[src*='banner'],iframe[width='300'][height='250']";
+
+  // Analisa um único elemento (e seus descendentes fixed/absolute) e remove
+  // overlays de clickjacking / iframes de anúncio. Evita varrer o DOM
+  // inteiro a cada mutação — só inspeciona o que acabou de ser inserido.
+  const inspect = (root) => {
+    if (!(root instanceof Element)) return;
+
     const vw = innerWidth, vh = innerHeight;
-    document.querySelectorAll("body *").forEach((el) => {
+    const check = (el) => {
       let s;
       try {
         s = getComputedStyle(el);
@@ -224,23 +232,28 @@
         el.remove();
         bump("overlay clickjacking");
       }
+    };
+
+    check(root);
+    root.querySelectorAll("*").forEach(check);
+
+    if (root.matches(AD_IFRAME_SEL)) {
+      root.remove();
+      bump("iframe de anúncio");
+      return;
+    }
+    root.querySelectorAll(AD_IFRAME_SEL).forEach((f) => {
+      f.remove();
+      bump("iframe de anúncio");
     });
-    // iframes de anúncio conhecidos
-    document
-      .querySelectorAll(
-        "iframe[src*='ads'],iframe[src*='popads'],iframe[src*='propeller'],iframe[src*='exoclick'],iframe[src*='juicyads'],iframe[src*='adsterra'],iframe[src*='hilltop'],iframe[src*='doubleclick'],iframe[src*='banner'],iframe[width='300'][height='250']"
-      )
-      .forEach((f) => {
-        f.remove();
-        bump("iframe de anúncio");
-      });
   };
 
   const start = () => {
-    killOverlays();
-    new MutationObserver(() => {
-      clearTimeout(window.__apT);
-      window.__apT = setTimeout(killOverlays, 250);
+    inspect(document.body || document.documentElement);
+    new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        m.addedNodes.forEach(inspect);
+      }
     }).observe(document.documentElement, { childList: true, subtree: true });
   };
 
