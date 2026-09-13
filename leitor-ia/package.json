@@ -1,0 +1,25 @@
+{
+  "name": "leitor-ia",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Extensão de leitura assistida (GPT, Claude, Gemini, Kimi, GLM).",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:e2e": "playwright test tests/e2e",
+    "test:watch": "vitest",
+    "lint": "eslint . --ext .js",
+    "format": "prettier --write \"**/*.{js,json,html,css,md}\""
+  },
+  "devDependencies": {
+    "vitest": "^2.0.0",
+    "playwright": "^1.45.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.3.0",
+    "@eslint/js": "^9.0.0",
+    "globals": "^15.0.0",
+    "jsdom": "^24.0.0"
+  }
+}

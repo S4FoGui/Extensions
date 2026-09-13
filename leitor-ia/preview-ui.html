@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leitor IA — preview da interface (preto & branco)</title>
+<style>
+  :root {
+    --bg: #f7f7f7; --surface: #fff; --ink: #141414; --ink-soft: #6f6f6f; --ink-faint: #9a9a9a;
+    --line: #e6e6e6; --line-soft: #f0f0f0; --hover: #f4f4f4; --user-bubble: #ececec;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #d9d9d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; line-height: 1.55; color: var(--ink); display: flex; justify-content: center; padding: 24px 12px; }
+  .panel { position: relative; width: 400px; max-width: 100%; height: 760px; max-height: 94vh; background: var(--bg); border-radius: 18px; box-shadow: 0 12px 40px rgba(0,0,0,.35); display: flex; flex-direction: column; overflow: hidden; }
+  button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px 6px; }
+  .brand { display: flex; align-items: center; gap: 7px; font-family: Georgia, "Times New Roman", serif; font-size: 15px; }
+  .topbar-actions { display: flex; gap: 4px; }
+  .icon-btn { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; color: var(--ink-soft); }
+  .icon-btn:hover { background: var(--line-soft); color: var(--ink); }
+  .controls { display: flex; gap: 8px; padding: 4px 14px 8px; align-items: center; }
+
+  /* seletor custom */
+  .msel { position: relative; flex: 1; min-width: 0; }
+  .msel-trigger { display: flex; align-items: center; gap: 7px; width: 100%; background: var(--surface); border: 1px solid #bdbdbd; border-radius: 10px; padding: 6px 10px; font-size: 12.5px; }
+  .msel-icon { display: flex; }
+  .msel-trigger .lbl { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msel-trigger .chev { color: var(--ink-soft); transform: rotate(180deg); }
+  .msel-menu { position: absolute; top: calc(100% + 6px); left: 0; right: 0; min-width: 248px; background: var(--surface); border: 1px solid #e0e0e0; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,.08), 0 16px 40px rgba(0,0,0,.16); max-height: 300px; overflow-y: auto; padding: 6px; z-index: 40; scrollbar-width: thin; scrollbar-color: #d4d4d4 transparent; }
+  .msel-menu::-webkit-scrollbar { width: 6px; }
+  .msel-menu::-webkit-scrollbar-thumb { background-color: #d4d4d4; border-radius: 4px; }
+  .msel-group-label { display: block; font-size: 10px; letter-spacing: .09em; text-transform: uppercase; font-weight: 600; color: var(--ink-faint); padding: 9px 8px 4px; }
+  .msel-menu .msel-group-label:not(:first-child) { margin-top: 8px; border-top: 1px solid var(--line-soft); padding-top: 9px; }
+  .msel-menu .msel-group-label:first-child { padding-top: 4px; }
+  .msel-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 7px 8px; border-radius: 8px; font-size: 12.5px; }
+  .msel-item:hover { background: #ebebeb; }
+  .msel-item.active { font-weight: 600; background: var(--line-soft); }
+  .msel-item .p-icon { display: flex; color: var(--ink-faint); flex-shrink: 0; }
+  .msel-item.active .p-icon { color: var(--ink); }
+  .msel-item .lbl2 { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msel-item .check { display: flex; visibility: hidden; }
+  .msel-item.active .check { visibility: visible; }
+
+  .seg { display: flex; background: var(--line-soft); border-radius: 999px; padding: 2px; flex-shrink: 0; }
+  .seg button { padding: 4px 10px; font-size: 11.5px; color: var(--ink-soft); border-radius: 999px; white-space: nowrap; }
+  .seg button.active { background: var(--ink); color: #fff; }
+
+  .page-chip { display: flex; align-items: center; gap: 6px; margin: 0 14px 8px; padding: 5px 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; font-size: 11.5px; color: var(--ink-soft); min-width: 0; }
+  .page-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip-btn { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 6px; color: var(--ink-soft); }
+
+  #chat { flex: 1; overflow-y: auto; padding: 6px 14px 12px; }
+  .msg { margin-bottom: 14px; }
+  .msg.user { display: flex; }
+  .msg.user .bubble { background: var(--user-bubble); border-radius: 12px; padding: 8px 12px; max-width: 92%; white-space: pre-wrap; }
+  .md p { margin: 0 0 8px; } .md p:last-child { margin-bottom: 0; }
+  .md h3 { font-family: Georgia, serif; font-size: 14.5px; margin: 12px 0 6px; }
+  .md ul { margin: 0 0 8px; padding-left: 20px; } .md li { margin-bottom: 3px; }
+
+  .composer { padding: 0 14px 10px; }
+  .composer-box { display: flex; align-items: flex-end; gap: 8px; background: var(--surface); border: 1px solid var(--ink); border-radius: 16px; padding: 9px 9px 9px 14px; box-shadow: 0 1px 6px rgba(0,0,0,.1); }
+  .composer-box .ph { flex: 1; color: var(--ink-faint); font-size: 14px; padding: 4px 0; }
+  #btn-send { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50%; background: var(--ink); color: #fff; flex-shrink: 0; }
+  .hint { text-align: center; color: var(--ink-faint); font-size: 10.5px; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <header class="topbar">
+      <div class="brand">
+        <svg viewBox="0 0 24 24" width="17" height="17"><g stroke="currentColor" stroke-width="2.7" stroke-linecap="round"><line x1="12" y1="2.6" x2="12" y2="21.4"/><line x1="3.9" y1="7.3" x2="20.1" y2="16.7"/><line x1="3.9" y1="16.7" x2="20.1" y2="7.3"/></g></svg>
+        <span>Leitor&nbsp;IA</span>
+      </div>
+      <div class="topbar-actions">
+        <button class="icon-btn"><svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+        <button class="icon-btn"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.09a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1Z"/></svg></button>
+      </div>
+    </header>
+
+    <div class="controls">
+      <div class="msel">
+        <button class="msel-trigger">
+          <span class="msel-icon"><svg viewBox="0 0 24 24" width="14" height="14"><g stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="3" x2="12" y2="21"/><line x1="4.2" y1="7.5" x2="19.8" y2="16.5"/><line x1="4.2" y1="16.5" x2="19.8" y2="7.5"/></g></svg></span>
+          <span class="lbl">Sonnet 5</span>
+          <svg class="chev" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="msel-menu">
+          <span class="msel-group-label">ChatGPT</span>
+          <button class="msel-item"><span class="p-icon"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 2.6 20.2 7.3v9.4L12 21.4 3.8 16.7V7.3L12 2.6Z"/><circle cx="12" cy="12" r="3.1"/></svg></span><span class="lbl2">GPT-5.2</span><span class="check"></span></button>
+          <button class="msel-item"><span class="p-icon"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 2.6 20.2 7.3v9.4L12 21.4 3.8 16.7V7.3L12 2.6Z"/><circle cx="12" cy="12" r="3.1"/></svg></span><span class="lbl2">GPT-5.1</span><span class="check"></span></button>
+          <span class="msel-group-label">Claude</span>
+          <button class="msel-item active"><span class="p-icon"><svg viewBox="0 0 24 24" width="14" height="14"><g stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="3" x2="12" y2="21"/><line x1="4.2" y1="7.5" x2="19.8" y2="16.5"/><line x1="4.2" y1="16.5" x2="19.8" y2="7.5"/></g></svg></span><span class="lbl2">Sonnet 5</span><span class="check"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5l5 5 10-11"/></svg></span></button>
+          <button class="msel-item"><span class="p-icon"><svg viewBox="0 0 24 24" width="14" height="14"><g stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="3" x2="12" y2="21"/><line x1="4.2" y1="7.5" x2="19.8" y2="16.5"/><line x1="4.2" y1="16.5" x2="19.8" y2="7.5"/></g></svg></span><span class="lbl2">Opus 5</span><span class="check"></span></button>
+          <button class="msel-item"><span class="p-icon"><svg viewBox="0 0 24 24" width="14" height="14"><g stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="3" x2="12" y2="21"/><line x1="4.2" y1="7.5" x2="19.8" y2="16.5"/><line x1="4.2" y1="16.5" x2="19.8" y2="7.5"/></g></svg></span><span class="lbl2">Fable 5.1</span><span class="check"></span></button>
+          <span class="msel-group-label">Gemini</span>
+          <button class="msel-item"><span class="p-icon"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2c.9 5.2 4.8 9.1 10 10-5.2.9-9.1 4.8-10 10-.9-5.2-4.8-9.1-10-10 5.2-.9 9.1-4.8 10-10Z"/></svg></span><span class="lbl2">3.1 Pro</span><span class="check"></span></button>
+          <button class="msel-item"><span class="p-icon"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2c.9 5.2 4.8 9.1 10 10-5.2.9-9.1 4.8-10 10-.9-5.2-4.8-9.1-10-10 5.2-.9 9.1-4.8 10-10Z"/></svg></span><span class="lbl2">3.6 Flash</span><span class="check"></span></button>
+          <span class="msel-group-label">Kimi</span>
+          <button class="msel-item"><span class="p-icon"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></span><span class="lbl2">K3</span><span class="check"></span></button>
+          <span class="msel-group-label">Z.AI (GLM)</span>
+          <button class="msel-item"><span class="p-icon"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M13.2 2 4.6 13.4h6L9.4 22l9.4-12.2h-6L13.2 2Z"/></svg></span><span class="lbl2">GLM-5.3</span><span class="check"></span></button>
+        </div>
+      </div>
+      <div class="seg">
+        <button>Baixo</button><button class="active">Médio</button><button>Alto</button><button>Extra</button><button>Máx</button>
+      </div>
+    </div>
+
+    <div class="page-chip">
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>
+      <span class="page-title">Como funciona o painel solar fotovoltaico — Blog Energia</span>
+      <button class="chip-btn"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 4 22 10 16 10"/><path d="M20.5 14a8.5 8.5 0 1 1-2-8.9L22 8.5"/></svg></button>
+      <button class="chip-btn"><svg viewBox="0 0 24 24" width="12" height="12"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+    </div>
+
+    <div id="chat">
+      <div class="msg user"><div class="bubble">Resuma esta página em 5 pontos</div></div>
+      <div class="msg assistant">
+        <div class="md">
+          <h3>Resumo em 5 pontos</h3>
+          <ul>
+            <li><strong>Células fotovoltaicas</strong> convertem luz em eletricidade pelo efeito fotovoltaico.</li>
+            <li>O <strong>inversor</strong> transforma corrente contínua em alternada para uso doméstico.</li>
+            <li>A eficiência típica dos painéis fica entre <strong>17% e 22%</strong>.</li>
+            <li>O payback médio no Brasil é de <strong>3 a 5 anos</strong>, com vida útil de 25+.</li>
+            <li>Excedentes podem gerar <strong>créditos de energia</strong> no sistema on-grid.</li>
+          </ul>
+          <p>Quer que eu detalhe algum ponto ou traduza o artigo?</p>
+        </div>
+      </div>
+    </div>
+
+    <footer class="composer">
+      <div class="composer-box">
+        <span class="ph">Pergunte sobre esta página…</span>
+        <button id="btn-send"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg></button>
+      </div>
+      <p class="hint">Enter envia · Shift+Enter quebra linha · a página entra como contexto</p>
+    </footer>
+  </div>
+</body>
+</html>

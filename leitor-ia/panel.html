@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Leitor IA</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+
+  <header class="topbar">
+    <div class="brand">
+      <svg class="spark" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+        <g stroke="currentColor" stroke-width="2.7" stroke-linecap="round">
+          <line x1="12" y1="2.6" x2="12" y2="21.4"/>
+          <line x1="3.9" y1="7.3" x2="20.1" y2="16.7"/>
+          <line x1="3.9" y1="16.7" x2="20.1" y2="7.3"/>
+        </g>
+      </svg>
+      <span>Leitor&nbsp;IA</span>
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-new" class="icon-btn" title="Nova conversa">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <button id="btn-vision" class="icon-btn" title="Visão: enviar print da página junto (modelos compatíveis)">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2Z"/><circle cx="12" cy="13" r="4"/></svg>
+      </button>
+      <button id="btn-settings" class="icon-btn" title="Ajustes (chaves de API)">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.09a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1Z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="controls">
+    <div class="msel" id="msel">
+      <button id="msel-trigger" class="msel-trigger" aria-haspopup="listbox" aria-expanded="false" title="Escolher modelo">
+        <span class="msel-icon" id="msel-icon"></span>
+        <span id="msel-label">—</span>
+        <svg class="chev" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div id="msel-menu" class="msel-menu" role="listbox" tabindex="-1"></div>
+    </div>
+    <div class="seg" id="effort" title="Esforço de raciocínio do modelo">
+      <button data-effort="low">Baixo</button>
+      <button data-effort="medium">Médio</button>
+      <button data-effort="high">Alto</button>
+      <button data-effort="xhigh">Extra</button>
+      <button data-effort="max">Máx</button>
+    </div>
+  </div>
+
+  <div id="page-chip" class="page-chip hidden">
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>
+    <span id="page-title" class="page-title"></span>
+    <button id="page-refresh" class="chip-btn" title="Reler a página">
+      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 4 22 10 16 10"/><path d="M20.5 14a8.5 8.5 0 1 1-2-8.9L22 8.5"/></svg>
+    </button>
+    <button id="page-toggle" class="chip-btn" title="Não incluir a página no contexto">
+      <svg viewBox="0 0 24 24" width="12" height="12"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+
+  <div id="page-missing" class="page-chip missing hidden">
+    <span id="page-missing-label">Página não lida</span>
+    <button id="page-retry" class="chip-btn text-btn">Ler página</button>
+  </div>
+
+  <main id="chat"></main>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <footer class="composer">
+    <div id="vision-thumb" class="vision-thumb hidden"><img alt="print da aba"></div>
+    <div class="composer-box">
+      <textarea id="input" rows="1" placeholder="Pergunte sobre esta página…" spellcheck="false"></textarea>
+      <button id="btn-send" title="Enviar">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>
+      </button>
+    </div>
+    <p class="hint">Enter envia · Shift+Enter quebra linha · a página entra como contexto</p>
+  </footer>
+
+  <!-- ======================= Ajustes ======================= -->
+  <div id="settings-overlay" class="overlay hidden">
+    <div class="settings">
+      <div class="settings-head">
+        <h2>Ajustes</h2>
+        <button id="settings-close" class="icon-btn" title="Fechar">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <p class="note">Tudo fica salvo apenas neste navegador.</p>
+
+      <h3>Provedores</h3>
+      <div id="providers-list"></div>
+      <p class="note"><strong>Web grátis</strong> (padrão, sem chave): aba oculta no site do modelo — login com Google uma vez e a resposta chega aqui no painel. <strong>Chave de API</strong>: usa a API oficial (a do Gemini é grátis em aistudio.google.com). <strong>OAuth</strong>: apenas Gemini.</p>
+
+      <h3>Painel</h3>
+      <label class="limit-row">Posição do painel
+        <select id="panel-mode">
+          <option value="inpage">Dentro da página (todos os navegadores)</option>
+          <option value="sidepanel">Painel nativo do navegador (direita)</option>
+          <option value="right">Janela encaixada à direita</option>
+          <option value="left">Janela encaixada à esquerda</option>
+        </select>
+      </label>
+      <p class="note">“Dentro da página” abre uma gaveta com o Leitor IA na própria aba quando você clica no ícone da extensão — funciona até onde o painel nativo não existe (Brave etc.).</p>
+
+      <h3>Contexto da página</h3>
+      <label class="limit-row">Máximo de caracteres enviados por página
+        <input id="char-limit" type="number" min="2000" max="80000" step="1000">
+      </label>
+
+      <h3>Modelo personalizado</h3>
+      <div class="custom-row">
+        <select id="custom-provider"></select>
+        <input id="custom-model" type="text" placeholder="ex.: gpt-5.2, gemini-3-pro" spellcheck="false">
+        <button id="custom-add" class="btn">Adicionar</button>
+      </div>
+      <input type="text" id="custom-endpoint" class="base-input" placeholder="Endpoint próprio (opcional): https://meu-gateway.local/v1" spellcheck="false">
+      <input type="text" id="custom-key" class="base-input" placeholder="Chave de API (opcional, p/ 9Route, OpenRouter...)" spellcheck="false">
+      <ul id="custom-list"></ul>
+
+      <div class="settings-actions">
+        <button id="settings-save" class="btn primary">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

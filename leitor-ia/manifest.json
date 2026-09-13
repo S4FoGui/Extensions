@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Leitor IA",
+  "version": "1.0.0",
+  "description": "Lê a página que você está vendo e conversa sobre ela com GPT, Claude, Gemini, Kimi ou GLM — com controle de esforço do modelo.",
+  "minimum_chrome_version": "116",
+  "permissions": ["sidePanel", "activeTab", "scripting", "storage", "tabs", "contextMenus", "identity"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "side_panel": { "default_path": "panel.html" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["config.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["panel.html", "panel.css", "panel.js", "config.js", "icons/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "action": { "default_title": "Abrir Leitor IA" },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
