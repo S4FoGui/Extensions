@@ -712,6 +712,22 @@ async function sendMessage(raw) {
 
   const { provider, model } = parseModel(prefs.model);
   const p = PROVIDERS.find((x) => x.id === provider);
+  const meta = getModelMeta();
+
+  // Captura snapshot de imagens antes do ramo web
+  let image = "";
+  if (prefs.includeVision && meta.vision) {
+    image = await captureThumb();
+    if (!image) {
+      try {
+        const shot = await chrome.runtime.sendMessage({ type: "get-screenshot" });
+        if (shot && shot.ok && shot.dataUrl) image = shot.dataUrl;
+        else console.warn("[Leitor IA] get-screenshot falhou:", shot && shot.error);
+      } catch (e) {
+        console.warn("[Leitor IA] erro no get-screenshot:", e);
+      }
+    }
+  }
 
   // Web grátis, SEM redirecionar: uma aba oculta no site do provedor
   // (login com Google uma única vez) digita a pergunta e devolve a
@@ -730,7 +746,7 @@ async function sendMessage(raw) {
         payload += '\n\nConteúdo da página:\n"""' + String(page.text).slice(0, limit) + '"""';
       }
     }
-    if (prefs.includeVision && image) {
+    if (prefs.includeVision && image && image.length > 100) {
       payload += "\n\n[Visão — Screenshot da aba atual: " + image.slice(0, 100) + "...]";
     }
     hideBanner();
@@ -797,12 +813,13 @@ async function sendMessage(raw) {
       return;
     }
     // deltas/done chegam pelo onMessage (filtrados por reqId); segurança ~3 min
+    const rid = currentReqId;
     setTimeout(() => {
-      if (sending && webHolder && currentReqId) {
+      if (sending && webHolder && currentReqId === rid) {
         finishStream(webHolder, webAcc, "O site demorou demais para responder.", false);
-        setSending(false);
         webHolder = null;
         clearWebSession();
+        setSending(false);
       }
     }, 180000);
     return;
@@ -844,25 +861,12 @@ async function sendMessage(raw) {
 
   input.value = "";
   autosize();
-  // Visão multimodal: print da aba ativa (captureVisibleTab) se o modelo suportar
-  const meta = getModelMeta();
-  let image = "";
-  if (prefs.includeVision && meta.vision) {
-    image = await captureThumb(); // captura e exibe a miniatura
-    if (!image) {
-      try {
-        const shot = await chrome.runtime.sendMessage({ type: "get-screenshot" });
-        if (shot && shot.ok) image = shot.dataUrl;
-        else console.warn("[Leitor IA] get-screenshot via send fallback falhou:", shot.error);
-      } catch (e) {
-        console.warn("[Leitor IA] erro no get-screenshot:", e);
-      }
-    }
-    if (!image) {
-      finishStream(addAssistantPlaceholder(), "", "⚠️ Falha ao capturar a tela. Verifique se a aba é permitida (Chrome bloqueia páginas de configurações e nova aba).", false);
-      setSending(false);
-      return;
-    }
+  // Visão multimodal: o print já foi capturado no topo de sendMessage.
+  if (prefs.includeVision && meta.vision && !image) {
+    showBanner(
+      "Falha ao capturar a tela (o Chrome bloqueia páginas internas e a Nova Aba). Enviando só o texto.",
+      null
+    );
   }
   messages.push({ role: "user", content: text, image: image });
   renderChat();

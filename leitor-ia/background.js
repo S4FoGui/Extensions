@@ -299,7 +299,7 @@ async function toggleInPage(tab) {
     } catch (_) {
       await chrome.scripting.executeScript({
         target: { tabId: target.id },
-        files: ["content.js"]
+        files: ["config.js", "content.js"]
       });
       await chrome.tabs.sendMessage(target.id, { type: "leitor-ia-toggle" });
     }
@@ -428,11 +428,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     })().then(sendResponse);
     return true;
   }
-  // Web grátis: forward deltas/done do content script para o painel
+  // Web grátis: o content script já usa chrome.runtime.sendMessage, que
+  // chega DIRETO ao painel (é uma página da extensão). Reencaminhar aqui
+  // duplicava cada delta/done. Apenas ignoramos.
   if (msg && (msg.type === "leitor-ia-web-delta" || msg.type === "leitor-ia-web-done")) {
-    console.log("[Leitor IA BG] Forwarding", msg.type, "reqId:", msg.reqId);
-    chrome.runtime.sendMessage(msg).catch(() => {});
-    return true;
+    return false;
   }
   if (msg && msg.type === "web-reset") {
     // "+" novo chat no modo web: recarrega a aba oculta na URL limpa.
@@ -456,6 +456,26 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 // a aba do site e entrega o texto ao content script, que o
 // insere na caixa de conversa do site e envia.
 // ------------------------------------------------------------
+// Injeta config.js/content.js só quando a aba ainda não responde.
+// Injetar por cima do content script do manifest duplicava listeners
+// (pergunta enviada várias vezes) e quebrava o config.js.
+async function ensureContentScript(tabId) {
+  try {
+    const pong = await chrome.tabs.sendMessage(tabId, { type: "leitor-ia-ping" });
+    if (pong && pong.ok) return true;
+  } catch (_) {}
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      files: ["config.js", "content.js"]
+    });
+    return true;
+  } catch (e) {
+    console.log("[Leitor IA BG] falha ao injetar content script:", e && e.message);
+    return false;
+  }
+}
+
 async function webBridge(providerId, text, modelId) {
   const provider = PROVIDERS.find((p) => p.id === providerId);
   if (!provider || !provider.webUrl) {
@@ -468,8 +488,7 @@ async function webBridge(providerId, text, modelId) {
     tab = await chrome.tabs.create({ url: provider.webUrl, active: false });
     await waitForTabLoad(tab.id, 12000);
   }
-  // Sempre injeta content scripts (aba existente pode não ter)
-  await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["config.js", "content.js"] }).catch(() => {});
+  await ensureContentScript(tab.id);
   
   // A aba pode estar carregando: tenta entregar por até ~6s.
   let delivered = false;
@@ -539,9 +558,8 @@ async function webAsk(providerId, text, reqId, modelId, images = []) {
   } else {
     console.log("[Leitor IA BG] Found existing tab", tab.id, "for", origin);
   }
-  // Sempre injeta content scripts (aba existente pode não ter) e garante não descarte
-  console.log("[Leitor IA BG] Injecting scripts into tab", tab.id);
-  await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["config.js", "content.js"] }).catch((e) => console.log("[Leitor IA BG] Script injection error:", e.message));
+  // Injeta só se ainda não houver content script vivo nessa aba.
+  await ensureContentScript(tab.id);
   await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
   
   const askLoop = async () => {
@@ -691,7 +709,7 @@ async function getPageContext() {
   } catch (_) {}
   // 3) Injeta o content script agora e pergunta de novo.
   try {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["config.js", "content.js"] });
     const via2 = await chrome.tabs.sendMessage(tab.id, { type: "leitor-ia-getpage" });
     if (via2 && via2.ok) return via2;
   } catch (_) {}
@@ -766,17 +784,18 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onMessage.addListener((msg) => {
     if (msg && msg.type === "start") {
       controller = new AbortController();
-      // Fail-safe: se nenhum evento (delta/status) chegar em 20s, encerra
-      // com erro claro — o spinner nunca fica travado para sempre.
+      // Fail-safe: idleta >2min encerra com erro — raciocínio max pode
+      // ficar tempo significativo sem emitir nada.
       let activity = Date.now();
       let finished = false;
+      const IDLE_LIMIT_MS = 120000;
       const livePost = (m) => {
         activity = Date.now();
         safePost(m);
       };
       const guard = setInterval(() => {
         if (finished) return clearInterval(guard);
-        if (Date.now() - activity > 20000) {
+        if (Date.now() - activity > IDLE_LIMIT_MS) {
           finished = true;
           clearInterval(guard);
           safePost({

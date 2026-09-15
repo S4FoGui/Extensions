@@ -12,6 +12,11 @@
 // ============================================================
 (() => {
   if (window.top !== window) return; // só no frame principal
+  // Guard: executeScript pode injetar este arquivo de novo numa aba que já
+  // tem o content script do manifest → sem isso, cada injeção registra mais
+  // um onMessage e a pergunta é digitada/enviada 2x, 3x, 4x…
+  if (window.__leitorIaContentReady) return;
+  window.__leitorIaContentReady = true;
 
   // ---------- mapa de seletores por host (vem do config.js) ----------
   const WEB = {};
@@ -470,50 +475,67 @@
   }
 
   // ---------- mensagens ----------
-  chrome.runtime.onMessage.addListener(async (m, _sender, sendResponse) => {
-    if (m && m.type === "leitor-ia-toggle") {
-      toggle();
-      if (sendResponse) sendResponse({ ok: true });
+  async function handleAsk(m) {
+    const cfg = WEB[hostKey()];
+    if (!cfg) return { ok: false, error: "Esta aba não é um site de modelo." };
+    const box = findComposer(cfg);
+    if (!box) {
+      return { ok: false, needLogin: true, reason: loginBarrier(cfg) ? "login" : "nocomposer" };
     }
-    if (m && m.type === "leitor-ia-getpage") {
-      if (sendResponse) sendResponse(extractLocalPage());
+    // Marca as bolhas antigas do assistente para não serem capturadas pela nova resposta
+    const sels = (cfg.answer || []).concat([
+      ".message-content", ".response-content", "model-response", ".model-response-text",
+      '[data-message-author="assistant"]', 'div[class*="message"][class*="assistant"]'
+    ]);
+    for (const s of sels) {
+      document.querySelectorAll(s).forEach((el) => el.classList.add("leitor-ia-old"));
     }
-    if (m && m.type === "leitor-ia-snapshot") {
-      if (sendResponse) sendResponse({ reqId: state.reqId, text: state.text, done: state.done });
-    }
-    if (m && m.type === "leitor-ia-ask") {
-      const cfg = WEB[hostKey()];
-      if (!cfg) {
-        if (sendResponse) sendResponse({ ok: false, error: "Esta aba não é um site de modelo." });
-        return;
-      }
-      const box = findComposer(cfg);
-      if (!box) {
-        console.log("[Leitor IA] No composer box found. loginBarrier:", loginBarrier(cfg));
-        if (sendResponse) {
-          sendResponse({ ok: false, needLogin: true, reason: loginBarrier(cfg) ? "login" : "nocomposer" });
-        }
-        return;
-      }
-      console.log("[Leitor IA] Composer found, proceeding to fillAndSend");
-      // Marca as bolhas antigas do assistente para não serem capturadas pela nova resposta
-      const sels = (cfg.answer || []).concat([
-        '.message-content', '.response-content', 'model-response', '.model-response-text',
-        '[data-message-author="assistant"]', 'div[class*="message"][class*="assistant"]'
-      ]);
-      for (const s of sels) {
-        document.querySelectorAll(s).forEach(el => el.classList.add("leitor-ia-old"));
-      }
+    // Registra já aqui: fillAndSend demora e o background pode reenviar.
+    state.reqId = m.reqId || state.reqId;
+    state.text = "";
+    state.done = false;
+    await fillAndSend(cfg, box, m.text || "", m.modelId, m.images || []);
+    // qSnippet usa o final do texto para evitar corte no meio do prompt no fallback
+    const qSnippet = (m.text || "").trim().slice(-80);
+    watchAnswer(cfg, qSnippet, m.reqId);
+    return { ok: true };
+  }
 
-      // Aguarda o envio real antes de responder ok
-      await fillAndSend(cfg, box, m.text || "", m.modelId, m.images || []);
-      console.log("[Leitor IA] fillAndSend completed, starting watchAnswer");
-      // qSnippet usa o final do texto para evitar corte no meio do prompt no fallback
-      const full = (m.text || "").trim();
-      const qSnippet = full.slice(-80);
-      watchAnswer(cfg, qSnippet, m.reqId);
-      if (sendResponse) sendResponse({ ok: true });
+  // IMPORTANTE: o listener NÃO pode ser async. No Chrome só `return true`
+  // mantém o canal aberto para um sendResponse assíncrono; devolver uma
+  // Promise fecha o canal na hora e o background nunca recebe a resposta
+  // (era isso que fazia o webAsk tentar 12x e reenviar o prompt).
+  chrome.runtime.onMessage.addListener((m, _sender, sendResponse) => {
+    if (!m) return false;
+    if (m.type === "leitor-ia-ping") {
+      sendResponse({ ok: true });
+      return false;
     }
+    if (m.type === "leitor-ia-toggle") {
+      toggle();
+      sendResponse({ ok: true });
+      return false;
+    }
+    if (m.type === "leitor-ia-getpage") {
+      sendResponse(extractLocalPage());
+      return false;
+    }
+    if (m.type === "leitor-ia-snapshot") {
+      sendResponse({ reqId: state.reqId, text: state.text, done: state.done });
+      return false;
+    }
+    if (m.type === "leitor-ia-ask") {
+      // Ignora reenvio do mesmo reqId (retry do background em corrida).
+      if (m.reqId && m.reqId === state.reqId && !state.done) {
+        sendResponse({ ok: true });
+        return false;
+      }
+      handleAsk(m)
+        .then(sendResponse)
+        .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+      return true; // resposta assíncrona
+    }
+    return false;
   });
 
   // Sem botão flutuante: o painel abre/fecha pelo ícone da extensão.
