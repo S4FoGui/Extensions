@@ -6,7 +6,8 @@
 // `web.*` centraliza os seletores DOM da automação web grátis.
 // ============================================================
 
-const PROVIDERS = [
+// Idempotente: o arquivo pode ser injetado de novo na mesma aba (executeScript).
+var PROVIDERS = globalThis.PROVIDERS || (globalThis.PROVIDERS = [
   {
     id: "openai",
     name: "ChatGPT",
@@ -240,12 +241,12 @@ const PROVIDERS = [
       { id: "glm-5.2", label: "GLM-5.2", effort: true, vision: true }
     ]
   }
-];
+]);
 
-const EFFORTS = [
+var EFFORTS = globalThis.EFFORTS || (globalThis.EFFORTS = [
   { id: "low", label: "Baixo" },
   { id: "medium", label: "Médio" },
   { id: "high", label: "Alto" },
   { id: "xhigh", label: "Extra" },
   { id: "max", label: "Máx" }
-];
+]);
