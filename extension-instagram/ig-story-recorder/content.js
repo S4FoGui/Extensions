@@ -15,6 +15,8 @@ const ICONS = {
   pause: `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4.5" height="14" rx="1"/><rect x="13.5" y="5" width="4.5" height="14" rx="1"/></svg>`,
   folder: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4.5l2 2.5H19a2 2 0 0 1 2 2z"/></svg>`,
   music: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 18.5V5.5l11-2v13"/><circle cx="6.5" cy="18.5" r="2.8"/><circle cx="17.5" cy="16.5" r="2.8"/></svg>`,
+  volume2: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>`,
+  volumeX: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>`,
 };
 
 function icon(name, extraAttrs = "") {
@@ -41,11 +43,11 @@ function computeDrawRect(srcW, srcH, dstW, dstH, mode) {
   return { dx: (dstW - dw) / 2, dy: (dstH - dh) / 2, dw, dh };
 }
 
-function drawText(ctx, text, xRel, yRel, W, H) {
+function drawText(ctx, text, xRel, yRel, W, H, color) {
   if (!text) return;
   ctx.font = "bold 56px system-ui, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillStyle = "#fff";
+  ctx.fillStyle = color || "#fff";
   ctx.strokeStyle = "rgba(0,0,0,0.65)";
   ctx.lineWidth = 7;
   const centerX = (xRel ?? 0.5) * W;
@@ -88,37 +90,293 @@ async function decodeAudio(audioFile) {
   return { ac, audioBuf };
 }
 
-// foto estática + texto/proporção -> canvas; se tiver música, vira vídeo (webm)
-async function renderPhoto(file, opts, logEl) {
-  const img = await loadImage(file);
-  const canvas = document.createElement("canvas");
-  canvas.width = TARGET_W;
-  canvas.height = TARGET_H;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, TARGET_W, TARGET_H);
-  const r = computeDrawRect(img.naturalWidth, img.naturalHeight, TARGET_W, TARGET_H, opts.aspect);
-  ctx.drawImage(img, r.dx, r.dy, r.dw, r.dh);
-  drawText(ctx, opts.text, opts.textX, opts.textY, TARGET_W, TARGET_H);
+// ---------- WebCodecs + mp4-muxer: gera MP4 real (H.264+AAC/Opus) ----------
 
-  if (!opts.audioFile) {
-    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.92));
-    return { blob, isVideo: false, width: TARGET_W, height: TARGET_H };
+async function hasWebCodecsH264() {
+  if (typeof VideoEncoder === "undefined") return false;
+  try {
+    const sup = await VideoEncoder.isConfigSupported({
+      codec: "avc1.42001e",
+      width: TARGET_W,
+      height: TARGET_H,
+      bitrate: 2_000_000,
+    });
+    return sup.supported === true;
+  } catch { return false; }
+}
+
+async function pickAudioCodec(sampleRate, channels) {
+  if (typeof AudioEncoder === "undefined") return null;
+  // Tentar AAC primeiro (Instagram prefere)
+  try {
+    const aac = await AudioEncoder.isConfigSupported({
+      codec: "mp4a.40.2",
+      sampleRate,
+      numberOfChannels: channels,
+      bitrate: 128_000,
+    });
+    if (aac.supported) return { codec: "mp4a.40.2", muxCodec: "aac" };
+  } catch {}
+  // Fallback: Opus em mp4
+  try {
+    const opus = await AudioEncoder.isConfigSupported({
+      codec: "opus",
+      sampleRate: 48000,
+      numberOfChannels: channels,
+      bitrate: 128_000,
+    });
+    if (opus.supported) return { codec: "opus", muxCodec: "opus" };
+  } catch {}
+  return null;
+}
+
+// Encode AudioBuffer → EncodedAudioChunks via AudioEncoder
+async function encodeAudioBuffer(audioBuf, durationSec, audioCodecInfo, muxer) {
+  const channels = audioBuf.numberOfChannels;
+  const srcRate = audioBuf.sampleRate;
+  // Opus requer 48000
+  const encRate = audioCodecInfo.muxCodec === "opus" ? 48000 : srcRate;
+
+  return new Promise((resolve, reject) => {
+    const encoder = new AudioEncoder({
+      output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+      error: (e) => reject(e),
+    });
+    encoder.configure({
+      codec: audioCodecInfo.codec,
+      sampleRate: encRate,
+      numberOfChannels: channels,
+      bitrate: 128_000,
+    });
+
+    // Resample se necessário e split em AudioData frames
+    const totalSamples = Math.min(Math.floor(durationSec * srcRate), audioBuf.length);
+    const frameSize = 1024; // AAC frame size, Opus também aceita
+    const resampleRatio = encRate / srcRate;
+    const totalEncSamples = Math.floor(totalSamples * resampleRatio);
+
+    // Intercalar canais em Float32Array planar
+    const channelData = [];
+    for (let ch = 0; ch < channels; ch++) {
+      channelData.push(audioBuf.getChannelData(ch));
+    }
+
+    for (let offset = 0; offset < totalEncSamples; offset += frameSize) {
+      const count = Math.min(frameSize, totalEncSamples - offset);
+      const srcOffset = Math.floor(offset / resampleRatio);
+      const data = new Float32Array(count * channels);
+      // Interleaved format
+      for (let i = 0; i < count; i++) {
+        const srcIdx = Math.min(srcOffset + Math.floor(i / resampleRatio), totalSamples - 1);
+        for (let ch = 0; ch < channels; ch++) {
+          data[i * channels + ch] = channelData[ch][srcIdx] || 0;
+        }
+      }
+      const audioData = new AudioData({
+        format: "f32",
+        sampleRate: encRate,
+        numberOfFrames: count,
+        numberOfChannels: channels,
+        timestamp: Math.round((offset / encRate) * 1_000_000),
+        data,
+      });
+      encoder.encode(audioData);
+      audioData.close();
+    }
+
+    encoder.flush().then(() => {
+      encoder.close();
+      resolve();
+    }).catch(reject);
+  });
+}
+
+// Render foto estática como MP4 via WebCodecs (H.264 + Audio)
+async function renderPhotoWebCodecs(canvas, audioBuf, durationSec, logEl) {
+  const { Muxer, ArrayBufferTarget } = window.Mp4Muxer;
+  const fps = 5;
+  const totalFrames = Math.ceil(durationSec * fps);
+
+  // Detectar codec de áudio
+  const audioCodecInfo = await pickAudioCodec(audioBuf.sampleRate, audioBuf.numberOfChannels);
+  if (!audioCodecInfo) {
+    log(logEl, "⚠ Nenhum encoder de áudio disponível, vídeo sem som.");
   }
 
-  log(logEl, "Gerando vídeo (foto + música)...");
-  const { ac, audioBuf } = await decodeAudio(opts.audioFile);
+  const muxerOpts = {
+    target: new ArrayBufferTarget(),
+    fastStart: "in-memory",
+    firstTimestampBehavior: "offset",
+    video: {
+      codec: "avc",
+      width: TARGET_W,
+      height: TARGET_H,
+      frameRate: fps,
+    },
+  };
+  if (audioCodecInfo) {
+    muxerOpts.audio = {
+      codec: audioCodecInfo.muxCodec,
+      numberOfChannels: audioBuf.numberOfChannels,
+      sampleRate: audioCodecInfo.muxCodec === "opus" ? 48000 : audioBuf.sampleRate,
+    };
+  }
+  const muxer = new Muxer(muxerOpts);
+
+  // Video encoder
+  const videoEncoder = new VideoEncoder({
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error: (e) => { throw e; },
+  });
+  videoEncoder.configure({
+    codec: "avc1.42001e",
+    width: TARGET_W,
+    height: TARGET_H,
+    bitrate: 2_000_000,
+    framerate: fps,
+  });
+
+  log(logEl, `Encoding ${totalFrames} video frames (${fps}fps, ${durationSec.toFixed(1)}s)...`);
+
+  // Encode static frame repeated
+  for (let i = 0; i < totalFrames; i++) {
+    const timestampUs = Math.round((i / fps) * 1_000_000);
+    const frame = new VideoFrame(canvas, {
+      timestamp: timestampUs,
+      duration: Math.round(1_000_000 / fps),
+    });
+    videoEncoder.encode(frame, { keyFrame: i % (fps * 2) === 0 });
+    frame.close();
+    // Yield para evitar congelar UI
+    if (i % 10 === 0) await new Promise((r) => setTimeout(r, 0));
+  }
+  await videoEncoder.flush();
+  videoEncoder.close();
+
+  // Encode áudio
+  if (audioCodecInfo) {
+    log(logEl, "Encoding áudio...");
+    await encodeAudioBuffer(audioBuf, durationSec, audioCodecInfo, muxer);
+  }
+
+  muxer.finalize();
+  const buf = muxer.target.buffer;
+  log(logEl, `MP4 gerado: ${(buf.byteLength / 1024).toFixed(0)}KB`);
+  return new Blob([buf], { type: "video/mp4" });
+}
+
+// Render vídeo re-processado como MP4 via WebCodecs
+async function renderVideoWebCodecs(videoEl, canvas, ctx, drawRect, opts, logEl) {
+  const { Muxer, ArrayBufferTarget } = window.Mp4Muxer;
+  const fps = 30;
+  const durationSec = videoEl.duration;
+  const totalFrames = Math.ceil(durationSec * fps);
+
+  // Audio source
+  let audioBuf = null;
+  let audioCodecInfo = null;
+  if (opts.audioFile) {
+    const decoded = await decodeAudio(opts.audioFile);
+    audioBuf = decoded.audioBuf;
+    audioCodecInfo = await pickAudioCodec(audioBuf.sampleRate, audioBuf.numberOfChannels);
+  }
+  // TODO: extrair áudio do vídeo original se não tiver audioFile
+  // (por ora só funciona com audioFile ou vídeo sem som)
+
+  const muxerOpts = {
+    target: new ArrayBufferTarget(),
+    fastStart: "in-memory",
+    firstTimestampBehavior: "offset",
+    video: {
+      codec: "avc",
+      width: TARGET_W,
+      height: TARGET_H,
+      frameRate: fps,
+    },
+  };
+  if (audioCodecInfo && audioBuf) {
+    muxerOpts.audio = {
+      codec: audioCodecInfo.muxCodec,
+      numberOfChannels: audioBuf.numberOfChannels,
+      sampleRate: audioCodecInfo.muxCodec === "opus" ? 48000 : audioBuf.sampleRate,
+    };
+  }
+  const muxer = new Muxer(muxerOpts);
+
+  const videoEncoder = new VideoEncoder({
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error: (e) => { throw e; },
+  });
+  videoEncoder.configure({
+    codec: "avc1.42001e",
+    width: TARGET_W,
+    height: TARGET_H,
+    bitrate: 4_000_000,
+    framerate: fps,
+  });
+
+  log(logEl, `Encoding vídeo: ${totalFrames} frames (${fps}fps, ${durationSec.toFixed(1)}s)...`);
+
+  // Seek frame-by-frame para extrair frames do vídeo
+  videoEl.pause();
+  videoEl.muted = true;
+  for (let i = 0; i < totalFrames; i++) {
+    const timeSec = i / fps;
+    if (timeSec > durationSec) break;
+    videoEl.currentTime = timeSec;
+    await new Promise((r) => { videoEl.onseeked = r; });
+
+    // Draw frame no canvas
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, TARGET_W, TARGET_H);
+    ctx.drawImage(videoEl, drawRect.dx, drawRect.dy, drawRect.dw, drawRect.dh);
+    drawText(ctx, opts.text, opts.textX, opts.textY, TARGET_W, TARGET_H, opts.color);
+
+    const timestampUs = Math.round(timeSec * 1_000_000);
+    const frame = new VideoFrame(canvas, {
+      timestamp: timestampUs,
+      duration: Math.round(1_000_000 / fps),
+    });
+    videoEncoder.encode(frame, { keyFrame: i % (fps * 2) === 0 });
+    frame.close();
+
+    if (i % 30 === 0) {
+      log(logEl, `  frame ${i}/${totalFrames}`);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+  await videoEncoder.flush();
+  videoEncoder.close();
+
+  if (audioCodecInfo && audioBuf) {
+    log(logEl, "Encoding áudio...");
+    await encodeAudioBuffer(audioBuf, Math.min(durationSec, 60), audioCodecInfo, muxer);
+  }
+
+  muxer.finalize();
+  const buf = muxer.target.buffer;
+  log(logEl, `MP4 gerado: ${(buf.byteLength / 1024).toFixed(0)}KB`);
+  return new Blob([buf], { type: "video/mp4" });
+}
+
+// ---------- MediaRecorder fallback (webm, pode não funcionar no Instagram) ----------
+
+async function renderPhotoMediaRecorder(canvas, ac, audioBuf, durationSec, logEl) {
   const source = ac.createBufferSource();
   source.buffer = audioBuf;
   const dest = ac.createMediaStreamDestination();
   source.connect(dest);
-  const durationSec = Math.min(audioBuf.duration, 60);
 
   const stream = new MediaStream();
   canvas.captureStream(2).getVideoTracks().forEach((t) => stream.addTrack(t));
   dest.stream.getAudioTracks().forEach((t) => stream.addTrack(t));
 
-  const recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp9,opus" });
+  let mimeType = "";
+  if (MediaRecorder.isTypeSupported("video/mp4;codecs=avc1,opus")) mimeType = "video/mp4;codecs=avc1,opus";
+  else if (MediaRecorder.isTypeSupported("video/mp4;codecs=avc1")) mimeType = "video/mp4;codecs=avc1";
+  else if (MediaRecorder.isTypeSupported("video/webm;codecs=h264")) mimeType = "video/webm;codecs=h264";
+  else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")) mimeType = "video/webm;codecs=vp8,opus";
+  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
   const chunks = [];
   recorder.ondataavailable = (e) => e.data.size > 0 && chunks.push(e.data);
   const stopped = new Promise((res) => (recorder.onstop = res));
@@ -127,19 +385,11 @@ async function renderPhoto(file, opts, logEl) {
   await new Promise((r) => setTimeout(r, durationSec * 1000));
   recorder.stop();
   await stopped;
-
-  return { blob: new Blob(chunks, { type: "video/webm" }), isVideo: true, width: TARGET_W, height: TARGET_H, duration: durationSec, coverCanvas: canvas };
+  log(logEl, "⚠ Usando MediaRecorder fallback (webm). Instagram pode rejeitar.");
+  return new Blob(chunks, { type: "video/mp4" });
 }
 
-// vídeo: re-renderiza frame a frame aplicando proporção/texto/música (webm)
-async function renderVideo(videoEl, opts, logEl) {
-  log(logEl, "Re-renderizando vídeo (proporção/texto/música)...");
-  const canvas = document.createElement("canvas");
-  canvas.width = TARGET_W;
-  canvas.height = TARGET_H;
-  const ctx = canvas.getContext("2d");
-  const r = computeDrawRect(videoEl.videoWidth, videoEl.videoHeight, TARGET_W, TARGET_H, opts.aspect);
-
+async function renderVideoMediaRecorder(videoEl, canvas, ctx, drawRect, opts, logEl) {
   const outStream = new MediaStream();
   canvas.captureStream(30).getVideoTracks().forEach((t) => outStream.addTrack(t));
 
@@ -160,7 +410,12 @@ async function renderVideo(videoEl, opts, logEl) {
     if (at) outStream.addTrack(at);
   }
 
-  const recorder = new MediaRecorder(outStream, { mimeType: "video/webm;codecs=vp9,opus" });
+  let recMime = "";
+  if (MediaRecorder.isTypeSupported("video/mp4;codecs=avc1,opus")) recMime = "video/mp4;codecs=avc1,opus";
+  else if (MediaRecorder.isTypeSupported("video/mp4;codecs=avc1")) recMime = "video/mp4;codecs=avc1";
+  else if (MediaRecorder.isTypeSupported("video/webm;codecs=h264")) recMime = "video/webm;codecs=h264";
+  else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")) recMime = "video/webm;codecs=vp9,opus";
+  const recorder = new MediaRecorder(outStream, recMime ? { mimeType: recMime } : {});
   const chunks = [];
   recorder.ondataavailable = (e) => e.data.size > 0 && chunks.push(e.data);
   const stopped = new Promise((res) => (recorder.onstop = res));
@@ -169,8 +424,8 @@ async function renderVideo(videoEl, opts, logEl) {
   function draw() {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, TARGET_W, TARGET_H);
-    ctx.drawImage(videoEl, r.dx, r.dy, r.dw, r.dh);
-    drawText(ctx, opts.text, opts.textX, opts.textY, TARGET_W, TARGET_H);
+    ctx.drawImage(videoEl, drawRect.dx, drawRect.dy, drawRect.dw, drawRect.dh);
+    drawText(ctx, opts.text, opts.textX, opts.textY, TARGET_W, TARGET_H, opts.color);
     raf = requestAnimationFrame(draw);
   }
 
@@ -184,8 +439,70 @@ async function renderVideo(videoEl, opts, logEl) {
   cancelAnimationFrame(raf);
   recorder.stop();
   await stopped;
+  log(logEl, "⚠ Usando MediaRecorder fallback (webm). Instagram pode rejeitar.");
+  return new Blob(chunks, { type: "video/mp4" });
+}
 
-  return { blob: new Blob(chunks, { type: "video/webm" }), isVideo: true, width: TARGET_W, height: TARGET_H, duration: videoEl.duration, coverCanvas: canvas };
+// ---------- Funções públicas de render (despacham WebCodecs ou fallback) ----------
+
+// foto estática + texto/proporção -> canvas; se tiver música, vira vídeo mp4
+async function renderPhoto(file, opts, logEl) {
+  const img = await loadImage(file);
+  const canvas = document.createElement("canvas");
+  canvas.width = TARGET_W;
+  canvas.height = TARGET_H;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, TARGET_W, TARGET_H);
+  const r = computeDrawRect(img.naturalWidth, img.naturalHeight, TARGET_W, TARGET_H, opts.aspect);
+  ctx.drawImage(img, r.dx, r.dy, r.dw, r.dh);
+  drawText(ctx, opts.text, opts.textX, opts.textY, TARGET_W, TARGET_H, opts.color);
+
+  if (!opts.audioFile) {
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.92));
+    return { blob, isVideo: false, width: TARGET_W, height: TARGET_H };
+  }
+
+  log(logEl, "Gerando vídeo (foto + música)...");
+  const { ac, audioBuf } = await decodeAudio(opts.audioFile);
+  const durationSec = Math.min(audioBuf.duration, 60);
+
+  let blob;
+  const canUseWebCodecs = await hasWebCodecsH264();
+  if (canUseWebCodecs && window.Mp4Muxer) {
+    log(logEl, "Usando WebCodecs + mp4-muxer (MP4 real).");
+    blob = await renderPhotoWebCodecs(canvas, audioBuf, durationSec, logEl);
+  } else {
+    log(logEl, "WebCodecs H.264 não disponível, usando MediaRecorder...");
+    blob = await renderPhotoMediaRecorder(canvas, ac, audioBuf, durationSec, logEl);
+  }
+
+  return { blob, isVideo: true, width: TARGET_W, height: TARGET_H, duration: durationSec, coverCanvas: canvas };
+}
+
+// vídeo: re-renderiza frame a frame aplicando proporção/texto/música → MP4
+async function renderVideo(videoEl, opts, logEl) {
+  log(logEl, "Re-renderizando vídeo (proporção/texto/música)...");
+  const canvas = document.createElement("canvas");
+  canvas.width = TARGET_W;
+  canvas.height = TARGET_H;
+  const ctx = canvas.getContext("2d");
+  const r = computeDrawRect(videoEl.videoWidth, videoEl.videoHeight, TARGET_W, TARGET_H, opts.aspect);
+
+  let blob;
+  const canUseWebCodecs = await hasWebCodecsH264();
+  // WebCodecs quando tem audioFile (substituição) ou quando não precisa de áudio.
+  // MediaRecorder quando precisa preservar áudio nativo do vídeo (sem audioFile).
+  const needsNativeAudio = !opts.audioFile;
+  if (canUseWebCodecs && window.Mp4Muxer && !needsNativeAudio) {
+    log(logEl, "Usando WebCodecs + mp4-muxer (MP4 real).");
+    blob = await renderVideoWebCodecs(videoEl, canvas, ctx, r, opts, logEl);
+  } else {
+    log(logEl, needsNativeAudio ? "Usando MediaRecorder (preserva áudio nativo)..." : "WebCodecs H.264 não disponível, usando MediaRecorder...");
+    blob = await renderVideoMediaRecorder(videoEl, canvas, ctx, r, opts, logEl);
+  }
+
+  return { blob, isVideo: true, width: TARGET_W, height: TARGET_H, duration: videoEl.duration, coverCanvas: canvas };
 }
 
 // ---------- Upload / publicação ----------
@@ -221,7 +538,7 @@ async function uploadPhoto(blob, w, h, logEl) {
 async function uploadVideo(blob, meta, logEl) {
   const uploadId = Date.now().toString();
   const name = `fb_uploader_${uploadId}`;
-  const entityType = blob.type || "video/mp4";
+  const entityType = "video/mp4";
   const res = await fetch(`https://www.instagram.com/rupload_igvideo/${name}`, {
     method: "POST",
     headers: {
@@ -283,7 +600,7 @@ async function uploadCoverPhoto(uploadId, sourceEl, w, h, logEl) {
   if (!res.ok) throw new Error("Falha no upload da capa do vídeo");
 }
 
-function buildConfigureBody(uploadId, isVideo, meta, audience) {
+function buildConfigureBody(uploadId, isVideo, meta, audience, opts) {
   const now = new Date();
   const body = new URLSearchParams({
     upload_id: uploadId,
@@ -297,6 +614,23 @@ function buildConfigureBody(uploadId, isVideo, meta, audience) {
   if (audience === "besties") {
     // best-effort / não documentado oficialmente: restringe a Melhores Amigos
     body.set("audience", "besties");
+  }
+  if (opts && opts.link) {
+    body.set("story_link_stickers", JSON.stringify([{
+      x: 0.5,
+      y: 0.8,
+      z: 0,
+      width: 0.5,
+      height: 0.1,
+      rotation: 0,
+      is_sticker: 1,
+      story_link: {
+        link_type: "web",
+        url: opts.link,
+        link_title: ""
+      }
+    }]));
+    body.set("story_cta", JSON.stringify([{"links":[{"webUri": opts.link}]}]));
   }
   if (isVideo) {
     const length = Number((meta.duration || 15).toFixed(2));
@@ -317,7 +651,7 @@ function buildConfigureBody(uploadId, isVideo, meta, audience) {
   return body;
 }
 
-async function configureToStory(uploadId, isVideo, meta, audience, logEl) {
+async function configureToStory(uploadId, isVideo, meta, audience, opts, logEl) {
   const maxTries = isVideo ? 12 : 1;
   const delayMs = 1500;
 
@@ -329,7 +663,7 @@ async function configureToStory(uploadId, isVideo, meta, audience, logEl) {
         "x-ig-app-id": APP_ID,
         "content-type": "application/x-www-form-urlencoded"
       },
-      body: buildConfigureBody(uploadId, isVideo, meta, audience)
+      body: buildConfigureBody(uploadId, isVideo, meta, audience, opts)
     });
 
     const text = await res.text();
@@ -666,13 +1000,13 @@ function injectUI() {
     }
     #igsp-stage:hover #igsp-video-controls,
     #igsp-stage.igsp-paused #igsp-video-controls { opacity: 1; }
-    #igsp-play {
+    #igsp-play, #igsp-mute {
       width: 26px; height: 26px; border-radius: 50%; border: 0; flex-shrink: 0;
       background: #fff; color: #000; cursor: pointer;
       display: grid; place-items: center; transition: transform .12s ease;
     }
-    #igsp-play svg { width: 12px; height: 12px; }
-    #igsp-play:hover { transform: scale(1.08); }
+    #igsp-play svg, #igsp-mute svg { width: 12px; height: 12px; }
+    #igsp-play:hover, #igsp-mute:hover { transform: scale(1.08); }
     #igsp-progress {
       flex: 1; height: 4px; border-radius: 999px; background: rgba(255,255,255,.25);
       cursor: pointer; position: relative;
@@ -797,6 +1131,14 @@ function injectUI() {
       white-space: pre-wrap; opacity: .85;
     }
     #igsp-log:empty { display: none; }
+
+    /* ===== Menu de contexto da legenda (cor/link) ===== */
+    .igsp-color-btn {
+      width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent;
+      cursor: pointer; transition: transform 0.1s, border-color 0.1s;
+    }
+    .igsp-color-btn:hover { transform: scale(1.1); }
+    .igsp-color-btn.active { border-color: var(--ig-pink) !important; transform: scale(1.15); box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
   `;
   document.head.appendChild(style);
 
@@ -819,9 +1161,10 @@ function injectUI() {
             </div>
             <img id="igsp-preview" style="display:none" />
             <div id="igsp-video-wrap" style="display:none">
-              <video id="igsp-preview-v" muted playsinline></video>
+              <video id="igsp-preview-v" playsinline></video>
               <div id="igsp-video-controls">
                 <button id="igsp-play" type="button">${icon("play")}</button>
+                <button id="igsp-mute" type="button">${icon("volume2")}</button>
                 <div id="igsp-progress"><div id="igsp-progress-fill"></div></div>
                 <span id="igsp-time">0:00</span>
               </div>
@@ -844,12 +1187,33 @@ function injectUI() {
             <label>Legenda / texto no story (opcional)</label>
             <textarea id="igsp-text" placeholder="Escreva algo... use quebras de linha e emojis 🎉" rows="1" maxlength="200"></textarea>
             <div class="igsp-count"><span id="igsp-count">0</span>/200</div>
-            <label style="margin-top:12px">Posição da legenda <span style="text-transform:none;font-weight:400">— ou arraste direto no player</span></label>
-            <div class="igsp-segmented" id="igsp-textpos">
-              <button type="button" data-value="top">Topo</button>
-              <button type="button" data-value="center" class="active">Centro</button>
-              <button type="button" data-value="bottom">Base</button>
+            
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px;">
+              <div>
+                <label style="margin:0 0 6px">Cor da Legenda</label>
+                <div class="igsp-colors" id="igsp-color-picker" style="display:flex; gap:6px;">
+                  <div class="igsp-color-btn active" style="background:#ffffff; border-color:#fff;" data-color="#ffffff"></div>
+                  <div class="igsp-color-btn" style="background:#000000;" data-color="#000000"></div>
+                  <div class="igsp-color-btn" style="background:#ff3040;" data-color="#ff3040"></div>
+                  <div class="igsp-color-btn" style="background:#00a0ff;" data-color="#00a0ff"></div>
+                  <div class="igsp-color-btn" style="background:#00d050;" data-color="#00d050"></div>
+                  <div class="igsp-color-btn" style="background:#ffce00;" data-color="#ffce00"></div>
+                </div>
+              </div>
+              <div style="flex:1; margin-left:20px;">
+                <label style="margin:0 0 6px">Posição</label>
+                <div class="igsp-segmented" id="igsp-textpos">
+                  <button type="button" data-value="top">Topo</button>
+                  <button type="button" data-value="center" class="active">Centro</button>
+                  <button type="button" data-value="bottom">Base</button>
+                </div>
+              </div>
             </div>
+          </div>
+
+          <div class="igsp-section">
+            <label>Link no Story (opcional)</label>
+            <input type="text" id="igsp-link-input" placeholder="https://..." style="width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--border); background:var(--bg-field); color:var(--text); font-size:13px; outline:none;" />
           </div>
 
           <div class="igsp-section">
@@ -881,8 +1245,8 @@ function injectUI() {
             </label>
           </div>
 
-          <button id="igsp-publish">Publicar Story</button>
-          <button id="igsp-close">Fechar</button>
+          <button id="igsp-publish" type="button">Publicar Story</button>
+          <button id="igsp-close" type="button">Fechar</button>
           <div id="igsp-log"></div>
         </div>
       </div>
@@ -897,6 +1261,7 @@ function injectUI() {
   const videoWrap = modal.querySelector("#igsp-video-wrap");
   const previewVid = modal.querySelector("#igsp-preview-v");
   const playBtn = modal.querySelector("#igsp-play");
+  const muteBtn = modal.querySelector("#igsp-mute");
   const progressEl = modal.querySelector("#igsp-progress");
   const progressFill = modal.querySelector("#igsp-progress-fill");
   const timeEl = modal.querySelector("#igsp-time");
@@ -913,6 +1278,8 @@ function injectUI() {
   // posição da legenda em fração da tela (0..1); presets abaixo movem esses valores,
   // e o arraste no player os atualiza livremente
   let textX = 0.5, textY = 0.5;
+  let captionColor = "#ffffff";
+  let captionLink = "";
   const presets = { top: 0.11, center: 0.5, bottom: 0.89 };
 
   function setTriggerVisible(visible) {
@@ -924,9 +1291,68 @@ function injectUI() {
     setTriggerVisible(false);
     modal.classList.remove("hidden");
   });
+  const draftOverlay = document.createElement("div");
+  draftOverlay.innerHTML = `
+    <h3 style="margin:0; font-size:16px; font-weight:600;">Salvar alterações?</h3>
+    <p style="margin:8px 0 16px; font-size:13px; color:var(--text-muted); text-align:center; max-width:80%;">Você tem edições não publicadas. Deseja mantê-las como rascunho para continuar depois?</p>
+    <div style="display:flex; gap:12px;">
+      <button id="igsp-draft-discard" type="button" style="padding:10px 16px; border-radius:10px; border:0; background:#3a1c22; color:#ff4d4f; cursor:pointer; font-weight:600; transition:transform .1s;">Descartar</button>
+      <button id="igsp-draft-save" type="button" style="padding:10px 16px; border-radius:10px; border:0; background:var(--text); color:var(--bg-card); cursor:pointer; font-weight:600; transition:transform .1s;">Manter Rascunho</button>
+    </div>
+  `;
+  draftOverlay.style.cssText = "display:none; position:absolute; inset:0; background:rgba(26,26,29,0.92); backdrop-filter:blur(8px); z-index:1000; border-radius:22px; align-items:center; justify-content:center; flex-direction:column;";
+  modal.querySelector("#igsp-card").appendChild(draftOverlay);
+
+  function resetState() {
+    fileInput.value = "";
+    textInput.value = "";
+    audioInput.value = "";
+    captionLink = "";
+    linkInput.value = "";
+    captionColor = "#ffffff";
+    captionEl.style.color = captionColor;
+    modal.querySelectorAll("#igsp-color-picker .igsp-color-btn").forEach(b => b.classList.remove("active"));
+    const whiteBtn = modal.querySelector("#igsp-color-picker .igsp-color-btn[data-color='#ffffff']");
+    if (whiteBtn) whiteBtn.classList.add("active");
+    captionEl.textContent = "";
+    captionEl.classList.remove("igsp-visible");
+    countEl.textContent = "0";
+    stage.classList.remove("igsp-filled");
+    selectedFile = null;
+    fileTxt.textContent = "Toque para escolher uma foto ou vídeo";
+    audioTxt.textContent = "Toque para escolher um áudio";
+    if (previewVid.src) { URL.revokeObjectURL(previewVid.src); previewVid.src = ""; }
+    if (previewImg.src) { URL.revokeObjectURL(previewImg.src); previewImg.src = ""; }
+  }
+
   modal.querySelector("#igsp-close").onclick = () => {
-    modal.classList.add("hidden");
-    setTriggerVisible(true);
+    if (selectedFile || textInput.value.trim() !== "") {
+      draftOverlay.style.display = "flex";
+    } else {
+      modal.classList.add("hidden");
+      setTriggerVisible(true);
+    }
+  };
+
+  draftOverlay.querySelector("#igsp-draft-save").onclick = (e) => {
+    e.target.style.transform = "scale(0.95)";
+    setTimeout(() => {
+      e.target.style.transform = "none";
+      draftOverlay.style.display = "none";
+      modal.classList.add("hidden");
+      setTriggerVisible(true);
+    }, 100);
+  };
+
+  draftOverlay.querySelector("#igsp-draft-discard").onclick = (e) => {
+    e.target.style.transform = "scale(0.95)";
+    setTimeout(() => {
+      e.target.style.transform = "none";
+      draftOverlay.style.display = "none";
+      resetState();
+      modal.classList.add("hidden");
+      setTriggerVisible(true);
+    }, 100);
   };
 
   // legenda: textarea que cresce sozinha conforme o texto, com contador,
@@ -970,6 +1396,7 @@ function injectUI() {
     if (active) active.classList.remove("active");
   }
   captionEl.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.ctrlKey) return;
     dragging = true;
     captionEl.classList.add("igsp-dragging");
     captionEl.setPointerCapture(e.pointerId);
@@ -998,6 +1425,28 @@ function injectUI() {
     audioTxt.textContent = audioInput.files[0] ? audioInput.files[0].name : "Toque para escolher um áudio";
   };
 
+  const linkInput = modal.querySelector("#igsp-link-input");
+
+  modal.querySelectorAll("#igsp-color-picker .igsp-color-btn").forEach(btn => {
+    btn.onclick = () => {
+      modal.querySelectorAll("#igsp-color-picker .igsp-color-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      captionColor = btn.dataset.color;
+      captionEl.style.color = captionColor;
+    };
+  });
+
+  linkInput.addEventListener("input", () => {
+    captionLink = linkInput.value.trim();
+  });
+
+  aspectSel.addEventListener("change", () => {
+    const val = aspectSel.value;
+    const fit = val === "cover" ? "cover" : "contain";
+    previewImg.style.objectFit = fit;
+    previewVid.style.objectFit = fit;
+  });
+
   function formatTime(s) {
     if (!isFinite(s)) return "0:00";
     const m = Math.floor(s / 60);
@@ -1006,9 +1455,21 @@ function injectUI() {
   }
 
   // player de vídeo customizado: play/pause + barra de progresso clicável
-  playBtn.onclick = () => (previewVid.paused ? previewVid.play() : previewVid.pause());
+  playBtn.onclick = () => {
+    if (!selectedFile || !selectedFile.type.startsWith("video")) return;
+    previewVid.paused ? previewVid.play() : previewVid.pause();
+  };
   previewVid.addEventListener("play", () => { playBtn.innerHTML = icon("pause"); stage.classList.remove("igsp-paused"); });
   previewVid.addEventListener("pause", () => { playBtn.innerHTML = icon("play"); stage.classList.add("igsp-paused"); });
+  
+  muteBtn.innerHTML = icon("volume2");
+  muteBtn.onclick = (e) => {
+    e.stopPropagation();
+    if (!selectedFile || !selectedFile.type.startsWith("video")) return;
+    previewVid.muted = !previewVid.muted;
+    muteBtn.innerHTML = previewVid.muted ? icon("volumeX") : icon("volume2");
+  };
+
   previewVid.addEventListener("timeupdate", () => {
     const pct = previewVid.duration ? (previewVid.currentTime / previewVid.duration) * 100 : 0;
     progressFill.style.width = pct + "%";
@@ -1016,6 +1477,7 @@ function injectUI() {
   });
   previewVid.addEventListener("loadedmetadata", () => { timeEl.textContent = formatTime(previewVid.duration); });
   progressEl.onclick = (e) => {
+    if (!selectedFile || !selectedFile.type.startsWith("video")) return;
     const rect = progressEl.getBoundingClientRect();
     const pct = (e.clientX - rect.left) / rect.width;
     if (previewVid.duration) previewVid.currentTime = pct * previewVid.duration;
@@ -1061,6 +1523,8 @@ function injectUI() {
       text: textInput.value.trim(),
       textX,
       textY,
+      color: captionColor,
+      link: captionLink,
       audioFile: audioInput.files[0] || null
     };
     const audience = audienceSel.value;
@@ -1115,8 +1579,18 @@ function injectUI() {
       }
 
       log(logEl, "Publicando como Story...");
-      await configureToStory(uploadId, isVideo, meta, audience, logEl);
+      await configureToStory(uploadId, isVideo, meta, audience, opts, logEl);
       log(logEl, "✅ Story publicado! Confira seu perfil.");
+      
+      setTimeout(() => {
+        modal.classList.add("hidden");
+        setTriggerVisible(true);
+        window.history.pushState(null, '', '/');
+        window.dispatchEvent(new Event('popstate'));
+        
+        // Reset state for next time
+        resetState();
+      }, 2000);
     } catch (err) {
       log(logEl, "❌ " + err.message);
     } finally {
