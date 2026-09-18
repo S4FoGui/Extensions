@@ -1,324 +1,483 @@
---- /tmp/background.js	2026-09-15 01:34:17.565833018 +0000
-+++ background.js	2026-09-15 01:35:17.487484679 +0000
-@@ -299,7 +299,7 @@
-     } catch (_) {
-       await chrome.scripting.executeScript({
-         target: { tabId: target.id },
--        files: ["content.js"]
-+        files: ["config.js", "content.js"]
-       });
-       await chrome.tabs.sendMessage(target.id, { type: "leitor-ia-toggle" });
-     }
-@@ -428,11 +428,11 @@
-     })().then(sendResponse);
-     return true;
-   }
--  // Web grátis: forward deltas/done do content script para o painel
-+  // Web grátis: o content script já usa chrome.runtime.sendMessage, que
-+  // chega DIRETO ao painel (é uma página da extensão). Reencaminhar aqui
-+  // duplicava cada delta/done. Apenas ignoramos.
-   if (msg && (msg.type === "leitor-ia-web-delta" || msg.type === "leitor-ia-web-done")) {
--    console.log("[Leitor IA BG] Forwarding", msg.type, "reqId:", msg.reqId);
--    chrome.runtime.sendMessage(msg).catch(() => {});
--    return true;
-+    return false;
-   }
-   if (msg && msg.type === "web-reset") {
-     // "+" novo chat no modo web: recarrega a aba oculta na URL limpa.
-@@ -456,6 +456,26 @@
- // a aba do site e entrega o texto ao content script, que o
- // insere na caixa de conversa do site e envia.
- // ------------------------------------------------------------
-+// Injeta config.js/content.js só quando a aba ainda não responde.
-+// Injetar por cima do content script do manifest duplicava listeners
-+// (pergunta enviada várias vezes) e quebrava o config.js.
-+async function ensureContentScript(tabId) {
-+  try {
-+    const pong = await chrome.tabs.sendMessage(tabId, { type: "leitor-ia-ping" });
-+    if (pong && pong.ok) return true;
-+  } catch (_) {}
-+  try {
-+    await chrome.scripting.executeScript({
-+      target: { tabId: tabId },
-+      files: ["config.js", "content.js"]
-+    });
-+    return true;
-+  } catch (e) {
-+    console.log("[Leitor IA BG] falha ao injetar content script:", e && e.message);
-+    return false;
-+  }
-+}
-+
- async function webBridge(providerId, text, modelId) {
-   const provider = PROVIDERS.find((p) => p.id === providerId);
-   if (!provider || !provider.webUrl) {
-@@ -468,8 +488,7 @@
-     tab = await chrome.tabs.create({ url: provider.webUrl, active: false });
-     await waitForTabLoad(tab.id, 12000);
-   }
--  // Sempre injeta content scripts (aba existente pode não ter)
--  await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["config.js", "content.js"] }).catch(() => {});
-+  await ensureContentScript(tab.id);
-   
-   // A aba pode estar carregando: tenta entregar por até ~6s.
-   let delivered = false;
-@@ -539,9 +558,8 @@
-   } else {
-     console.log("[Leitor IA BG] Found existing tab", tab.id, "for", origin);
-   }
--  // Sempre injeta content scripts (aba existente pode não ter) e garante não descarte
--  console.log("[Leitor IA BG] Injecting scripts into tab", tab.id);
--  await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["config.js", "content.js"] }).catch((e) => console.log("[Leitor IA BG] Script injection error:", e.message));
-+  // Injeta só se ainda não houver content script vivo nessa aba.
-+  await ensureContentScript(tab.id);
-   await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
-   
-   const askLoop = async () => {
-@@ -691,7 +709,7 @@
-   } catch (_) {}
-   // 3) Injeta o content script agora e pergunta de novo.
-   try {
--    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
-+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["config.js", "content.js"] });
-     const via2 = await chrome.tabs.sendMessage(tab.id, { type: "leitor-ia-getpage" });
-     if (via2 && via2.ok) return via2;
-   } catch (_) {}
-@@ -770,13 +788,16 @@
-       // com erro claro — o spinner nunca fica travado para sempre.
-       let activity = Date.now();
-       let finished = false;
-+      // Raciocínio "max" pode ficar >1min sem emitir nada: 20s derrubava
-+      // requisições legítimas.
-+      const IDLE_LIMIT_MS = 120000;
-       const livePost = (m) => {
-         activity = Date.now();
-         safePost(m);
-       };
-       const guard = setInterval(() => {
-         if (finished) return clearInterval(guard);
--        if (Date.now() - activity > 20000) {
-+        if (Date.now() - activity > IDLE_LIMIT_MS) {
-           finished = true;
-           clearInterval(guard);
-           safePost({
---- /tmp/config.js	2026-09-15 01:34:17.565665459 +0000
-+++ config.js	2026-09-15 01:34:30.344760645 +0000
-@@ -6,7 +6,8 @@
- // `web.*` centraliza os seletores DOM da automação web grátis.
- // ============================================================
- 
--const PROVIDERS = [
-+// Idempotente: o arquivo pode ser injetado de novo na mesma aba (executeScript).
-+var PROVIDERS = globalThis.PROVIDERS || (globalThis.PROVIDERS = [
-   {
-     id: "openai",
-     name: "ChatGPT",
-@@ -240,12 +241,12 @@
-       { id: "glm-5.2", label: "GLM-5.2", effort: true, vision: true }
-     ]
-   }
--];
-+]);
- 
--const EFFORTS = [
-+var EFFORTS = globalThis.EFFORTS || (globalThis.EFFORTS = [
-   { id: "low", label: "Baixo" },
-   { id: "medium", label: "Médio" },
-   { id: "high", label: "Alto" },
-   { id: "xhigh", label: "Extra" },
-   { id: "max", label: "Máx" }
--];
-\ No newline at end of file
-+]);
-\ No newline at end of file
---- /tmp/content.js	2026-09-15 01:34:17.565732595 +0000
-+++ content.js	2026-09-15 01:35:20.598547113 +0000
-@@ -12,6 +12,11 @@
- // ============================================================
- (() => {
-   if (window.top !== window) return; // só no frame principal
-+  // Guard: executeScript pode injetar este arquivo de novo numa aba que já
-+  // tem o content script do manifest → sem isso, cada injeção registra mais
-+  // um onMessage e a pergunta é digitada/enviada 2x, 3x, 4x…
-+  if (window.__leitorIaContentReady) return;
-+  window.__leitorIaContentReady = true;
+--- /tmp/v2/content.js	2026-09-15 02:53:44.024249023 +0000
++++ content.js	2026-09-15 02:55:11.631557267 +0000
+@@ -20,13 +20,19 @@
  
    // ---------- mapa de seletores por host (vem do config.js) ----------
    const WEB = {};
-@@ -470,50 +475,67 @@
++  const HOST_PROVIDER = {}; // host → id do provedor (p/ achar label do modelo)
+   (typeof PROVIDERS !== "undefined" ? PROVIDERS : []).forEach((p) => {
+     if (p.webUrl && p.web) {
+       try {
+-        WEB[new URL(p.webUrl).host.replace(/^www\./, "")] = p.web;
++        const host = new URL(p.webUrl).host.replace(/^www\./, "");
++        WEB[host] = p.web;
++        HOST_PROVIDER[host] = p;
+       } catch (_) {}
+     }
+   });
++  // Seletores extra de resposta: cobrem markdown containers de UIs mais
++  // recentes (data-message-id, katex/turn wrappers etc.) sem depender de
++  // classes específicas que mudam a cada release do site.
+   const GENERIC_ANSWERS = [
+     "main article",
+     'main [class*="markdown"]',
+@@ -35,10 +41,46 @@
+     '[data-testid*="message"]',
+     '[role="listitem"] article',
+     '[data-message-author="assistant"]',
+-    '[data-message-author-role="assistant"]'
++    '[data-message-author-role="assistant"]',
++    "[data-message-id]",
++    '[class*="turn"] [class*="markdown"]',
++    '[class*="response"] [class*="content"]',
++    "article"
+   ];
+ 
+   const hostKey = () => location.host.replace(/^www\./, "");
++  const DEBUG = true; // logs aparecem no console DA ABA do site (F12 nela), não no painel
++  const log = (...a) => { if (DEBUG) console.log("[Leitor IA]", ...a); };
++
++  // ---------- seletores personalizados (Ajustes → avançado) ----------
++  // Guardados em chrome.storage.local.customSelectors[providerId] =
++  // { composer: string[], send: string[], answer: string[], modelTrigger: string }
++  // Sempre tentados ANTES dos padrões do config.js.
++  async function getCustomSelectors(providerId) {
++    if (!providerId) return null;
++    try {
++      const s = await chrome.storage.local.get("customSelectors");
++      return (s.customSelectors && s.customSelectors[providerId]) || null;
++    } catch (_) {
++      return null;
++    }
++  }
++
++  function mergeCfg(baseCfg, custom) {
++    if (!custom) return baseCfg;
++    const merged = Object.assign({}, baseCfg);
++    for (const k of ["composer", "send", "answer"]) {
++      if (custom[k] && custom[k].length) {
++        merged[k] = custom[k].concat(baseCfg[k] || []);
++      }
++    }
++    if (custom.modelTrigger) {
++      merged.modelSelectors = Object.assign({}, baseCfg.modelSelectors, {
++        trigger: custom.modelTrigger
++      });
++    }
++    return merged;
++  }
+ 
+   // ---------- gaveta do painel ----------
+   let open = false;
+@@ -115,47 +157,136 @@
+ 
+   // ---------- web bridge ----------
+   function findComposer(cfg) {
+-    console.log("[Leitor IA] findComposer called, selectors:", cfg.composer);
++    log("findComposer, seletores:", cfg.composer);
+     for (const s of cfg.composer || []) {
+-      const el = document.querySelector(s);
+-      console.log("[Leitor IA] Selector:", s, "→", el ? "FOUND" : "not found");
++      let el = null;
++      try {
++        el = document.querySelector(s);
++      } catch (e) {
++        log("seletor inválido (custom?):", s, e.message);
++        continue;
++      }
++      log("  ", s, "→", el ? "achado" : "não achado");
+       if (el) return el;
+     }
+-    console.log("[Leitor IA] No composer found!");
++    log("NENHUM composer encontrado — verifique 'Seletores personalizados' nos Ajustes.");
+     return null;
    }
+ 
+-  // Digitação compatível com ProseMirror/Lexical/React:
+-  // focus → selectAll → insertText → InputEvent(inputType insertText).
+-  async function selectModel(cfg, modelId) {
+-    if (!cfg.modelSelectors || !cfg.modelSelectors.trigger || !modelId) return;
+-    const itemsMap = cfg.modelSelectors.items;
+-    if (!itemsMap || !itemsMap[modelId]) return;
+-    
+-    // Tenta encontrar o trigger de dropdown
+-    const trigger = document.querySelector(cfg.modelSelectors.trigger);
+-    if (!trigger) return;
+-    
++  function normTokens(s) {
++    return String(s || "")
++      .toLowerCase()
++      .replace(/[^a-z0-9.]+/g, " ")
++      .trim()
++      .split(/\s+/)
++      .filter(Boolean);
++  }
++
++  function scoreMatch(text, tokens) {
++    const it = normTokens(text);
++    let score = 0;
++    for (const t of tokens) if (it.includes(t)) score++;
++    return score;
++  }
++
++  // Encontra o container do menu/dropdown que acabou de abrir (não o
++  // document inteiro) para não clicar em itens de outra parte da página.
++  function findOpenMenuScope() {
++    const sels = [
++      '[role="menu"]:not([hidden])',
++      '[role="listbox"]:not([hidden])',
++      '[data-radix-popper-content-wrapper]',
++      '[data-state="open"][role]',
++      ".cdk-overlay-pane",
++      "[popover]"
++    ];
++    for (const s of sels) {
++      const els = Array.from(document.querySelectorAll(s)).filter((e) => e.offsetParent !== null);
++      if (els.length) return els[els.length - 1]; // o mais recente aberto
++    }
++    return null;
++  }
++
++  // Seleção de modelo NO SITE do provedor. Tenta, nesta ordem:
++  //  1) modelSelectors.items[modelId] do config.js (seletor exato)
++  //  2) seletores personalizados dos Ajustes (modelTrigger)
++  //  3) fallback genérico: acha um botão "expansível" plausível, abre,
++  //     escopa a busca ao menu que apareceu e casa por texto (fuzzy).
++  // Best-effort: se nada bater, segue sem trocar (usa o modelo já ativo no site).
++  async function selectModel(cfg, modelId, providerCfg) {
++    if (!modelId) return;
++    const label = providerCfg
++      ? ((providerCfg.models || []).find((m) => m.id === modelId) || {}).label || modelId
++      : modelId;
++    const tokens = normTokens(label + " " + modelId);
++    log("selectModel: alvo =", label, "(" + modelId + ")", "tokens =", tokens);
++
++    let trigger = null;
++    if (cfg.modelSelectors && cfg.modelSelectors.trigger) {
++      try {
++        trigger = document.querySelector(cfg.modelSelectors.trigger);
++      } catch (_) {}
++    }
++    if (!trigger) {
++      // Fallback: qualquer botão expansível visível cujo texto sugira ser
++      // o seletor de modelo (nome do provedor, "model", "modelo", versão).
++      const candidates = Array.from(
++        document.querySelectorAll(
++          'button[aria-haspopup], [role="button"][aria-haspopup], button[aria-expanded]'
++        )
++      ).filter((b) => b.offsetParent !== null);
++      trigger =
++        candidates.find((b) => /model|modelo|gpt|claude|gemini|k[0-9]|glm|\d\.\d/i.test(b.textContent || "")) ||
++        candidates[0] ||
++        null;
++      log(candidates.length, "candidato(s) genérico(s) de trigger; escolhido:", trigger ? trigger.textContent.trim().slice(0, 30) : "nenhum");
++    }
++    if (!trigger) {
++      log("selectModel: nenhum seletor de modelo encontrado nesta página — mantendo o modelo já ativo no site.");
++      return;
++    }
++
+     try {
+       trigger.click();
+-      await new Promise(r => setTimeout(r, 400)); // Aguarda animação de menu
+-      
+-      let opt = document.querySelector(itemsMap[modelId]);
+-      
+-      // Fallback: se o seletor falhar, procura pelo nome do modelo no texto de itens de menu
++      await new Promise((r) => setTimeout(r, 450)); // aguarda animação do menu
++
++      let opt = null;
++      if (cfg.modelSelectors && cfg.modelSelectors.items && cfg.modelSelectors.items[modelId]) {
++        try {
++          opt = document.querySelector(cfg.modelSelectors.items[modelId]);
++        } catch (_) {}
++      }
+       if (!opt) {
+-        const queryLabel = modelId.replace(/gemini-|claude-/i, "").replace(/-/g, " ");
+-        const items = Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], mat-option, .mat-mdc-menu-item'));
+-        opt = items.find(el => el.innerText && el.innerText.toLowerCase().includes(queryLabel.toLowerCase()));
++        const scope = findOpenMenuScope() || document;
++        const items = Array.from(
++          scope.querySelectorAll(
++            '[role="menuitem"],[role="menuitemradio"],[role="option"],mat-option,.mat-mdc-menu-item,li,button'
++          )
++        ).filter((el) => el.offsetParent !== null && el.textContent && el.textContent.trim().length > 0 && el.textContent.trim().length < 80);
++        log("menu aberto:", items.length, "item(ns) visível(is) para casar com", label);
++        let best = null;
++        let bestScore = 0;
++        for (const el of items) {
++          const sc = scoreMatch(el.textContent, tokens);
++          if (sc > bestScore) {
++            bestScore = sc;
++            best = el;
++          }
++        }
++        if (bestScore > 0) opt = best;
+       }
+-      
++
+       if (opt) {
++        log("selectModel: clicando em", opt.textContent.trim().slice(0, 40));
+         opt.click();
+-        await new Promise(r => setTimeout(r, 300));
++        await new Promise((r) => setTimeout(r, 300));
+       } else {
+-        trigger.click(); // Fecha o menu se não achou
++        log("selectModel: modelo '" + label + "' não apareceu no menu — fechando e seguindo com o modelo atual do site.");
++        trigger.click(); // fecha o menu
+       }
+-    } catch (_) {}
++    } catch (e) {
++      log("selectModel erro:", e.message);
++    }
+   }
+ 
+   // Retorna Promise que resolve após clicar no botão enviar.
+@@ -180,10 +311,15 @@
+     await new Promise((r) => setTimeout(r, 250));
+   }
+ 
+-  async function fillAndSend(cfg, box, text, modelId, images = []) {
+-    console.log("[Leitor IA] fillAndSend called, box:", box.tagName, box.className);
++  function composerIsEmpty(box) {
++    const val = box.value !== undefined ? box.value : box.textContent || box.innerText || "";
++    return !val || !val.trim();
++  }
++
++  async function fillAndSend(cfg, box, text, modelId, images = [], providerCfg) {
++    log("fillAndSend: box =", box.tagName, box.className || box.id);
+     await insertImageToWeb(cfg, box, images);
+-    await selectModel(cfg, modelId);
++    await selectModel(cfg, modelId, providerCfg);
+     return new Promise((resolve) => {
+       box.focus();
+       // Limpa conteúdo anterior
+@@ -223,22 +359,45 @@
+       // com polling pra achar o botão habilitado (React pode demorar)
+       const tryClick = (attempt) => {
+         if (attempt > 8) {
++          log("tryClick: nenhum botão 'enviar' habilitado após", attempt, "tentativas — usando Enter.");
+           // Último recurso: Enter
+           ["keydown", "keypress", "keyup"].forEach((t) =>
+             box.dispatchEvent(
+               new KeyboardEvent(t, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true })
+             )
+           );
+-          setTimeout(resolve, 300);
++          // Confere se realmente enviou (composer esvaziou). Se não, tenta
++          // um último fallback: botão com ícone logo ao lado da caixa.
++          setTimeout(() => {
++            if (composerIsEmpty(box)) {
++              log("Enter funcionou (composer esvaziou).");
++              return resolve();
++            }
++            log("Enter NÃO esvaziou o composer — tentando botão vizinho como último recurso.");
++            const near = box.closest("form") || box.parentElement || document;
++            const btn = near && near.querySelector('button:not([disabled])');
++            if (btn) {
++              btn.click();
++              log("Cliquei em botão vizinho:", btn.outerHTML.slice(0, 80));
++            } else {
++              log("Nenhum botão vizinho encontrado. Verifique 'Seletores personalizados' nos Ajustes para o botão de enviar deste site.");
++            }
++            setTimeout(resolve, 300);
++          }, 500);
+           return;
+         }
+         let btn = null;
+         for (const s of cfg.send || []) {
+-          btn = document.querySelector(s);
++          try {
++            btn = document.querySelector(s);
++          } catch (_) {
++            btn = null;
++          }
+           if (btn && !btn.disabled) break;
+           btn = null;
+         }
+         if (btn) {
++          log("tryClick: botão enviar encontrado, clicando.", btn.outerHTML.slice(0, 80));
+           btn.click();
+           setTimeout(resolve, 300);
+         } else {
+@@ -456,11 +615,14 @@
+       }
+       // Timeout absoluto: 300s (5min) sem conclusão
+       if (t && ticks > 300) return finish(t);
+-      // Fail-safe: 40s sem nenhum delta = erro claro
+-      if (!t && ticks > 40) {
++      // Fail-safe: 60s sem nenhum delta = erro claro. Se acontecer sempre
++      // neste site, os seletores de "resposta" do config.js provavelmente
++      // mudaram — configure em Ajustes → provedor → Seletores personalizados
++      // (veja os logs "[Leitor IA]" no console DESTA aba, F12 nela).
++      if (!t && ticks > 60) {
+         return finish(
+           "",
+-          "Tempo limite esgotado ou modelo aguardando interação. Verifique a aba ou suas chaves."
++          "Não encontrei a resposta na página. O site pode ter mudado o layout — configure 'Seletores personalizados' nos Ajustes deste provedor (veja o console da aba, F12, por logs [Leitor IA])."
+         );
+       }
+     };
+@@ -476,25 +638,33 @@
  
    // ---------- mensagens ----------
--  chrome.runtime.onMessage.addListener(async (m, _sender, sendResponse) => {
--    if (m && m.type === "leitor-ia-toggle") {
--      toggle();
--      if (sendResponse) sendResponse({ ok: true });
-+  async function handleAsk(m) {
-+    const cfg = WEB[hostKey()];
-+    if (!cfg) return { ok: false, error: "Esta aba não é um site de modelo." };
-+    const box = findComposer(cfg);
-+    if (!box) {
-+      return { ok: false, needLogin: true, reason: loginBarrier(cfg) ? "login" : "nocomposer" };
-+    }
-+    // Marca as bolhas antigas do assistente para não serem capturadas pela nova resposta
-+    const sels = (cfg.answer || []).concat([
-+      ".message-content", ".response-content", "model-response", ".model-response-text",
-+      '[data-message-author="assistant"]', 'div[class*="message"][class*="assistant"]'
-+    ]);
-+    for (const s of sels) {
-+      document.querySelectorAll(s).forEach((el) => el.classList.add("leitor-ia-old"));
-     }
--    if (m && m.type === "leitor-ia-getpage") {
--      if (sendResponse) sendResponse(extractLocalPage());
-+    // Registra já aqui: fillAndSend demora e o background pode reenviar.
-+    state.reqId = m.reqId || state.reqId;
-+    state.text = "";
-+    state.done = false;
-+    await fillAndSend(cfg, box, m.text || "", m.modelId, m.images || []);
-+    // qSnippet usa o final do texto para evitar corte no meio do prompt no fallback
-+    const qSnippet = (m.text || "").trim().slice(-80);
-+    watchAnswer(cfg, qSnippet, m.reqId);
-+    return { ok: true };
-+  }
+   async function handleAsk(m) {
+-    const cfg = WEB[hostKey()];
+-    if (!cfg) return { ok: false, error: "Esta aba não é um site de modelo." };
++    const host = hostKey();
++    const baseCfg = WEB[host];
++    if (!baseCfg) return { ok: false, error: "Esta aba não é um site de modelo." };
++    const providerCfg = HOST_PROVIDER[host] || null;
++    const custom = await getCustomSelectors(providerCfg && providerCfg.id);
++    const cfg = mergeCfg(baseCfg, custom);
++    if (custom) log("usando seletores personalizados para", providerCfg && providerCfg.id, custom);
 +
-+  // IMPORTANTE: o listener NÃO pode ser async. No Chrome só `return true`
-+  // mantém o canal aberto para um sendResponse assíncrono; devolver uma
-+  // Promise fecha o canal na hora e o background nunca recebe a resposta
-+  // (era isso que fazia o webAsk tentar 12x e reenviar o prompt).
-+  chrome.runtime.onMessage.addListener((m, _sender, sendResponse) => {
-+    if (!m) return false;
-+    if (m.type === "leitor-ia-ping") {
-+      sendResponse({ ok: true });
-+      return false;
+     const box = findComposer(cfg);
+     if (!box) {
+       return { ok: false, needLogin: true, reason: loginBarrier(cfg) ? "login" : "nocomposer" };
      }
--    if (m && m.type === "leitor-ia-snapshot") {
--      if (sendResponse) sendResponse({ reqId: state.reqId, text: state.text, done: state.done });
-+    if (m.type === "leitor-ia-toggle") {
-+      toggle();
-+      sendResponse({ ok: true });
-+      return false;
-     }
--    if (m && m.type === "leitor-ia-ask") {
--      const cfg = WEB[hostKey()];
--      if (!cfg) {
--        if (sendResponse) sendResponse({ ok: false, error: "Esta aba não é um site de modelo." });
--        return;
--      }
--      const box = findComposer(cfg);
--      if (!box) {
--        console.log("[Leitor IA] No composer box found. loginBarrier:", loginBarrier(cfg));
--        if (sendResponse) {
--          sendResponse({ ok: false, needLogin: true, reason: loginBarrier(cfg) ? "login" : "nocomposer" });
--        }
--        return;
--      }
--      console.log("[Leitor IA] Composer found, proceeding to fillAndSend");
--      // Marca as bolhas antigas do assistente para não serem capturadas pela nova resposta
--      const sels = (cfg.answer || []).concat([
--        '.message-content', '.response-content', 'model-response', '.model-response-text',
--        '[data-message-author="assistant"]', 'div[class*="message"][class*="assistant"]'
--      ]);
--      for (const s of sels) {
--        document.querySelectorAll(s).forEach(el => el.classList.add("leitor-ia-old"));
--      }
--
--      // Aguarda o envio real antes de responder ok
--      await fillAndSend(cfg, box, m.text || "", m.modelId, m.images || []);
--      console.log("[Leitor IA] fillAndSend completed, starting watchAnswer");
--      // qSnippet usa o final do texto para evitar corte no meio do prompt no fallback
--      const full = (m.text || "").trim();
--      const qSnippet = full.slice(-80);
--      watchAnswer(cfg, qSnippet, m.reqId);
--      if (sendResponse) sendResponse({ ok: true });
-+    if (m.type === "leitor-ia-getpage") {
-+      sendResponse(extractLocalPage());
-+      return false;
-+    }
-+    if (m.type === "leitor-ia-snapshot") {
-+      sendResponse({ reqId: state.reqId, text: state.text, done: state.done });
-+      return false;
-+    }
-+    if (m.type === "leitor-ia-ask") {
-+      // Ignora reenvio do mesmo reqId (retry do background em corrida).
-+      if (m.reqId && m.reqId === state.reqId && !state.done) {
-+        sendResponse({ ok: true });
-+        return false;
-+      }
-+      handleAsk(m)
-+        .then(sendResponse)
-+        .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
-+      return true; // resposta assíncrona
-     }
-+    return false;
-   });
- 
-   // Sem botão flutuante: o painel abre/fecha pelo ícone da extensão.
---- /tmp/panel.js	2026-09-15 01:34:17.565995457 +0000
-+++ panel.js	2026-09-15 01:35:34.744585076 +0000
-@@ -712,6 +712,23 @@
- 
-   const { provider, model } = parseModel(prefs.model);
-   const p = PROVIDERS.find((x) => x.id === provider);
-+  const meta = getModelMeta();
-+
-+  // BUG CORRIGIDO: `image` era usado no ramo "web" mas só era declarado
-+  // (let) lá embaixo → ReferenceError (TDZ) em TODO envio no modo padrão.
-+  let image = "";
-+  if (prefs.includeVision && meta.vision) {
-+    image = await captureThumb();
-+    if (!image) {
+     // Marca as bolhas antigas do assistente para não serem capturadas pela nova resposta
+-    const sels = (cfg.answer || []).concat([
++    const sels = (cfg.answer || []).concat(GENERIC_ANSWERS).concat([
+       ".message-content", ".response-content", "model-response", ".model-response-text",
+       '[data-message-author="assistant"]', 'div[class*="message"][class*="assistant"]'
+     ]);
+     for (const s of sels) {
+-      document.querySelectorAll(s).forEach((el) => el.classList.add("leitor-ia-old"));
 +      try {
-+        const shot = await chrome.runtime.sendMessage({ type: "get-screenshot" });
-+        if (shot && shot.ok) image = shot.dataUrl;
-+        else console.warn("[Leitor IA] get-screenshot falhou:", shot && shot.error);
-+      } catch (e) {
-+        console.warn("[Leitor IA] erro no get-screenshot:", e);
-+      }
-+    }
-+  }
- 
-   // Web grátis, SEM redirecionar: uma aba oculta no site do provedor
-   // (login com Google uma única vez) digita a pergunta e devolve a
-@@ -797,8 +814,9 @@
-       return;
++        document.querySelectorAll(s).forEach((el) => el.classList.add("leitor-ia-old"));
++      } catch (_) {}
      }
-     // deltas/done chegam pelo onMessage (filtrados por reqId); segurança ~3 min
-+    const rid = currentReqId;
-     setTimeout(() => {
--      if (sending && webHolder && currentReqId) {
-+      if (sending && webHolder && currentReqId === rid) {
-         finishStream(webHolder, webAcc, "O site demorou demais para responder.", false);
-         setSending(false);
-         webHolder = null;
-@@ -844,25 +862,12 @@
+     // Registra já aqui: fillAndSend demora e o background pode reenviar.
+     state.reqId = m.reqId || state.reqId;
+     state.text = "";
+     state.done = false;
+-    await fillAndSend(cfg, box, m.text || "", m.modelId, m.images || []);
++    await fillAndSend(cfg, box, m.text || "", m.modelId, m.images || [], providerCfg);
+     // qSnippet usa o final do texto para evitar corte no meio do prompt no fallback
+     const qSnippet = (m.text || "").trim().slice(-80);
+     watchAnswer(cfg, qSnippet, m.reqId);
+--- /tmp/v2/panel.js	2026-09-15 02:53:44.025621477 +0000
++++ panel.js	2026-09-15 02:55:40.023728094 +0000
+@@ -38,6 +38,10 @@
+   oauthMode: {} // { [provider]: "web" | "key" | "oauth" }
+ };
+ let oauth = {}; // { clientIds: {google: "..."}, tokens: {google: {accessToken, expiresAt}} }
++// Seletores CSS que o usuário descobriu via DevTools p/ quando o site do
++// provedor muda o layout e os seletores padrão do config.js param de bater.
++// { [providerId]: { composer: string[], send: string[], answer: string[], modelTrigger: string } }
++let customSelectors = {};
+ let page = null; // { url, title, description, text, selection }
+ let pageError = null;
+ let messages = []; // { role: "user"|"assistant", content }
+@@ -104,12 +108,14 @@
+     "customModels",
+     "prefs",
+     "chat",
+-    "oauth"
++    "oauth",
++    "customSelectors"
+   ]);
+   keys = Object.assign(keys, stored.keys || {});
+   oauth = stored.oauth || {};
+   baseUrls = stored.baseUrls || {};
+   customModels = stored.customModels || [];
++  customSelectors = stored.customSelectors || {};
+   prefs = Object.assign(prefs, stored.prefs || {});
+   messages =
+     stored.chat && Array.isArray(stored.chat.messages) ? stored.chat.messages : [];
+@@ -345,7 +351,24 @@
+           '<div class="oauth-actions"><button class="btn" data-oauth-connect="' +
+           p.id +
+           '">Conectar conta</button></div></div>'
+-        : "");
++        : "") +
++      '<details class="adv"><summary>Seletores personalizados (avançado — modo Web grátis)</summary>' +
++      '<p class="hint">Se o site do ' +
++      p.name +
++      ' mudou de layout e o modo Web parou de funcionar, cole aqui os seletores CSS do elemento (clique direito no elemento → Inspecionar → clique direito no HTML destacado → Copy → Copy selector). Vários seletores: separe por vírgula.</p>' +
++      '<label class="limit-row">Caixa de digitação (composer)<input type="text" class="base-input" data-csel="composer:' +
++      p.id +
++      '" placeholder="ex.: textarea#chat-input" spellcheck="false"></label>' +
++      '<label class="limit-row">Botão enviar<input type="text" class="base-input" data-csel="send:' +
++      p.id +
++      '" placeholder="ex.: button[data-testid=send-button]" spellcheck="false"></label>' +
++      '<label class="limit-row">Bolha de resposta do assistente<input type="text" class="base-input" data-csel="answer:' +
++      p.id +
++      '" placeholder="ex.: div.assistant-message" spellcheck="false"></label>' +
++      '<label class="limit-row">Botão de trocar modelo<input type="text" class="base-input" data-csel="modelTrigger:' +
++      p.id +
++      '" placeholder="ex.: button[aria-haspopup=menu]" spellcheck="false"></label>' +
++      '</details>';
  
-   input.value = "";
-   autosize();
--  // Visão multimodal: print da aba ativa (captureVisibleTab) se o modelo suportar
--  const meta = getModelMeta();
--  let image = "";
--  if (prefs.includeVision && meta.vision) {
--    image = await captureThumb(); // captura e exibe a miniatura
--    if (!image) {
--      try {
--        const shot = await chrome.runtime.sendMessage({ type: "get-screenshot" });
--        if (shot && shot.ok) image = shot.dataUrl;
--        else console.warn("[Leitor IA] get-screenshot via send fallback falhou:", shot.error);
--      } catch (e) {
--        console.warn("[Leitor IA] erro no get-screenshot:", e);
--      }
--    }
--    if (!image) {
--      finishStream(addAssistantPlaceholder(), "", "⚠️ Falha ao capturar a tela. Verifique se a aba é permitida (Chrome bloqueia páginas de configurações e nova aba).", false);
--      setSending(false);
--      return;
--    }
-+  // Visão multimodal: o print já foi capturado no topo de sendMessage.
-+  if (prefs.includeVision && meta.vision && !image) {
-+    showBanner(
-+      "Falha ao capturar a tela (o Chrome bloqueia páginas internas e a Nova Aba). Enviando só o texto.",
-+      null
-+    );
-   }
-   messages.push({ role: "user", content: text, image: image });
-   renderChat();
+     const sel = card.querySelector("[data-oauth-mode]");
+     sel.value = (prefs.oauthMode || {})[p.id] || "web";
+@@ -379,6 +402,32 @@
+       persist();
+     });
+ 
++    // ----- seletores personalizados (avançado) -----
++    card.querySelectorAll("[data-csel]").forEach((inp) => {
++      const [field, providerId] = inp.dataset.csel.split(":");
++      const current = (customSelectors[providerId] || {})[field];
++      inp.value = Array.isArray(current) ? current.join(", ") : current || "";
++      inp.addEventListener("input", () => {
++        const raw = inp.value.trim();
++        const entry = Object.assign({}, customSelectors[providerId]);
++        if (field === "modelTrigger") {
++          if (raw) entry.modelTrigger = raw;
++          else delete entry.modelTrigger;
++        } else {
++          const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
++          if (list.length) entry[field] = list;
++          else delete entry[field];
++        }
++        if (Object.keys(entry).length) {
++          customSelectors = Object.assign({}, customSelectors, { [providerId]: entry });
++        } else {
++          customSelectors = Object.assign({}, customSelectors);
++          delete customSelectors[providerId];
++        }
++        persist();
++      });
++    });
++
+     if (hasOauth) {
+       const ci = card.querySelector("[data-client-id]");
+       ci.value = (oauth.clientIds || {})[p.id] || "";
+@@ -1270,6 +1319,7 @@
+       customModels: customModels,
+       prefs: prefs,
+       oauth: oauth,
++      customSelectors: customSelectors,
+       chat: { messages: messages.slice(-40) }
+     });
+   } catch (_) {}
+--- /tmp/v2/panel.css	2026-09-15 02:53:44.026821400 +0000
++++ panel.css	2026-09-15 02:55:46.163948868 +0000
+@@ -1014,3 +1014,25 @@
+ .settings::-webkit-scrollbar-thumb:hover {
+   background: #cfcfcf;
+ }
++
++/* ---------- seletores personalizados (avançado) ---------- */
++.prov-card details.adv {
++  margin-top: 8px;
++  border-top: 1px dashed var(--line);
++  padding-top: 6px;
++}
++
++.prov-card details.adv summary {
++  cursor: pointer;
++  font-size: 11px;
++  color: var(--ink-soft);
++  user-select: none;
++}
++
++.prov-card details.adv summary:hover {
++  color: var(--ink);
++}
++
++.prov-card details.adv .hint {
++  margin: 6px 0;
++}
