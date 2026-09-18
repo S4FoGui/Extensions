@@ -38,6 +38,10 @@ let prefs = {
   oauthMode: {} // { [provider]: "web" | "key" | "oauth" }
 };
 let oauth = {}; // { clientIds: {google: "..."}, tokens: {google: {accessToken, expiresAt}} }
+// Seletores CSS que o usuário descobriu via DevTools p/ quando o site do
+// provedor muda o layout e os seletores padrão do config.js param de bater.
+// { [providerId]: { composer: string[], send: string[], answer: string[], modelTrigger: string } }
+let customSelectors = {};
 let page = null; // { url, title, description, text, selection }
 let pageError = null;
 let messages = []; // { role: "user"|"assistant", content }
@@ -104,12 +108,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     "customModels",
     "prefs",
     "chat",
-    "oauth"
+    "oauth",
+    "customSelectors"
   ]);
   keys = Object.assign(keys, stored.keys || {});
   oauth = stored.oauth || {};
   baseUrls = stored.baseUrls || {};
   customModels = stored.customModels || [];
+  customSelectors = stored.customSelectors || {};
   prefs = Object.assign(prefs, stored.prefs || {});
   messages =
     stored.chat && Array.isArray(stored.chat.messages) ? stored.chat.messages : [];
@@ -345,7 +351,24 @@ function renderProviderCards() {
           '<div class="oauth-actions"><button class="btn" data-oauth-connect="' +
           p.id +
           '">Conectar conta</button></div></div>'
-        : "");
+        : "") +
+      '<details class="adv"><summary>Seletores personalizados (avançado — modo Web grátis)</summary>' +
+      '<p class="hint">Se o site do ' +
+      p.name +
+      ' mudou de layout e o modo Web parou de funcionar, cole aqui os seletores CSS do elemento (clique direito no elemento → Inspecionar → clique direito no HTML destacado → Copy → Copy selector). Vários seletores: separe por vírgula.</p>' +
+      '<label class="limit-row">Caixa de digitação (composer)<input type="text" class="base-input" data-csel="composer:' +
+      p.id +
+      '" placeholder="ex.: textarea#chat-input" spellcheck="false"></label>' +
+      '<label class="limit-row">Botão enviar<input type="text" class="base-input" data-csel="send:' +
+      p.id +
+      '" placeholder="ex.: button[data-testid=send-button]" spellcheck="false"></label>' +
+      '<label class="limit-row">Bolha de resposta do assistente<input type="text" class="base-input" data-csel="answer:' +
+      p.id +
+      '" placeholder="ex.: div.assistant-message" spellcheck="false"></label>' +
+      '<label class="limit-row">Botão de trocar modelo<input type="text" class="base-input" data-csel="modelTrigger:' +
+      p.id +
+      '" placeholder="ex.: button[aria-haspopup=menu]" spellcheck="false"></label>' +
+      '</details>';
 
     const sel = card.querySelector("[data-oauth-mode]");
     sel.value = (prefs.oauthMode || {})[p.id] || "web";
@@ -377,6 +400,32 @@ function renderProviderCards() {
       if (v) baseUrls[p.id] = v;
       else delete baseUrls[p.id];
       persist();
+    });
+
+    // ----- seletores personalizados (avançado) -----
+    card.querySelectorAll("[data-csel]").forEach((inp) => {
+      const [field, providerId] = inp.dataset.csel.split(":");
+      const current = (customSelectors[providerId] || {})[field];
+      inp.value = Array.isArray(current) ? current.join(", ") : current || "";
+      inp.addEventListener("input", () => {
+        const raw = inp.value.trim();
+        const entry = Object.assign({}, customSelectors[providerId]);
+        if (field === "modelTrigger") {
+          if (raw) entry.modelTrigger = raw;
+          else delete entry.modelTrigger;
+        } else {
+          const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
+          if (list.length) entry[field] = list;
+          else delete entry[field];
+        }
+        if (Object.keys(entry).length) {
+          customSelectors = Object.assign({}, customSelectors, { [providerId]: entry });
+        } else {
+          customSelectors = Object.assign({}, customSelectors);
+          delete customSelectors[providerId];
+        }
+        persist();
+      });
     });
 
     if (hasOauth) {
@@ -714,14 +763,15 @@ async function sendMessage(raw) {
   const p = PROVIDERS.find((x) => x.id === provider);
   const meta = getModelMeta();
 
-  // Captura snapshot de imagens antes do ramo web
+  // BUG CORRIGIDO: `image` era usado no ramo "web" mas só era declarado
+  // (let) lá embaixo → ReferenceError (TDZ) em TODO envio no modo padrão.
   let image = "";
   if (prefs.includeVision && meta.vision) {
     image = await captureThumb();
     if (!image) {
       try {
         const shot = await chrome.runtime.sendMessage({ type: "get-screenshot" });
-        if (shot && shot.ok && shot.dataUrl) image = shot.dataUrl;
+        if (shot && shot.ok) image = shot.dataUrl;
         else console.warn("[Leitor IA] get-screenshot falhou:", shot && shot.error);
       } catch (e) {
         console.warn("[Leitor IA] erro no get-screenshot:", e);
@@ -746,7 +796,7 @@ async function sendMessage(raw) {
         payload += '\n\nConteúdo da página:\n"""' + String(page.text).slice(0, limit) + '"""';
       }
     }
-    if (prefs.includeVision && image && image.length > 100) {
+    if (prefs.includeVision && image) {
       payload += "\n\n[Visão — Screenshot da aba atual: " + image.slice(0, 100) + "...]";
     }
     hideBanner();
@@ -817,9 +867,9 @@ async function sendMessage(raw) {
     setTimeout(() => {
       if (sending && webHolder && currentReqId === rid) {
         finishStream(webHolder, webAcc, "O site demorou demais para responder.", false);
+        setSending(false);
         webHolder = null;
         clearWebSession();
-        setSending(false);
       }
     }, 180000);
     return;
@@ -1269,6 +1319,7 @@ async function persist() {
       customModels: customModels,
       prefs: prefs,
       oauth: oauth,
+      customSelectors: customSelectors,
       chat: { messages: messages.slice(-40) }
     });
   } catch (_) {}

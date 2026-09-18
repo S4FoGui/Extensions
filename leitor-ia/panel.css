@@ -1014,3 +1014,25 @@ button {
 .settings::-webkit-scrollbar-thumb:hover {
   background: #cfcfcf;
 }
+
+/* ---------- seletores personalizados (avançado) ---------- */
+.prov-card details.adv {
+  margin-top: 8px;
+  border-top: 1px dashed var(--line);
+  padding-top: 6px;
+}
+
+.prov-card details.adv summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--ink-soft);
+  user-select: none;
+}
+
+.prov-card details.adv summary:hover {
+  color: var(--ink);
+}
+
+.prov-card details.adv .hint {
+  margin: 6px 0;
+}

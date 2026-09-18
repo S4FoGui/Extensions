@@ -20,13 +20,19 @@
 
   // ---------- mapa de seletores por host (vem do config.js) ----------
   const WEB = {};
+  const HOST_PROVIDER = {}; // host → id do provedor (p/ achar label do modelo)
   (typeof PROVIDERS !== "undefined" ? PROVIDERS : []).forEach((p) => {
     if (p.webUrl && p.web) {
       try {
-        WEB[new URL(p.webUrl).host.replace(/^www\./, "")] = p.web;
+        const host = new URL(p.webUrl).host.replace(/^www\./, "");
+        WEB[host] = p.web;
+        HOST_PROVIDER[host] = p;
       } catch (_) {}
     }
   });
+  // Seletores extra de resposta: cobrem markdown containers de UIs mais
+  // recentes (data-message-id, katex/turn wrappers etc.) sem depender de
+  // classes específicas que mudam a cada release do site.
   const GENERIC_ANSWERS = [
     "main article",
     'main [class*="markdown"]',
@@ -35,10 +41,46 @@
     '[data-testid*="message"]',
     '[role="listitem"] article',
     '[data-message-author="assistant"]',
-    '[data-message-author-role="assistant"]'
+    '[data-message-author-role="assistant"]',
+    "[data-message-id]",
+    '[class*="turn"] [class*="markdown"]',
+    '[class*="response"] [class*="content"]',
+    "article"
   ];
 
   const hostKey = () => location.host.replace(/^www\./, "");
+  const DEBUG = true; // logs aparecem no console DA ABA do site (F12 nela), não no painel
+  const log = (...a) => { if (DEBUG) console.log("[Leitor IA]", ...a); };
+
+  // ---------- seletores personalizados (Ajustes → avançado) ----------
+  // Guardados em chrome.storage.local.customSelectors[providerId] =
+  // { composer: string[], send: string[], answer: string[], modelTrigger: string }
+  // Sempre tentados ANTES dos padrões do config.js.
+  async function getCustomSelectors(providerId) {
+    if (!providerId) return null;
+    try {
+      const s = await chrome.storage.local.get("customSelectors");
+      return (s.customSelectors && s.customSelectors[providerId]) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function mergeCfg(baseCfg, custom) {
+    if (!custom) return baseCfg;
+    const merged = Object.assign({}, baseCfg);
+    for (const k of ["composer", "send", "answer"]) {
+      if (custom[k] && custom[k].length) {
+        merged[k] = custom[k].concat(baseCfg[k] || []);
+      }
+    }
+    if (custom.modelTrigger) {
+      merged.modelSelectors = Object.assign({}, baseCfg.modelSelectors, {
+        trigger: custom.modelTrigger
+      });
+    }
+    return merged;
+  }
 
   // ---------- gaveta do painel ----------
   let open = false;
@@ -115,47 +157,136 @@
 
   // ---------- web bridge ----------
   function findComposer(cfg) {
-    console.log("[Leitor IA] findComposer called, selectors:", cfg.composer);
+    log("findComposer, seletores:", cfg.composer);
     for (const s of cfg.composer || []) {
-      const el = document.querySelector(s);
-      console.log("[Leitor IA] Selector:", s, "→", el ? "FOUND" : "not found");
+      let el = null;
+      try {
+        el = document.querySelector(s);
+      } catch (e) {
+        log("seletor inválido (custom?):", s, e.message);
+        continue;
+      }
+      log("  ", s, "→", el ? "achado" : "não achado");
       if (el) return el;
     }
-    console.log("[Leitor IA] No composer found!");
+    log("NENHUM composer encontrado — verifique 'Seletores personalizados' nos Ajustes.");
     return null;
   }
 
-  // Digitação compatível com ProseMirror/Lexical/React:
-  // focus → selectAll → insertText → InputEvent(inputType insertText).
-  async function selectModel(cfg, modelId) {
-    if (!cfg.modelSelectors || !cfg.modelSelectors.trigger || !modelId) return;
-    const itemsMap = cfg.modelSelectors.items;
-    if (!itemsMap || !itemsMap[modelId]) return;
-    
-    // Tenta encontrar o trigger de dropdown
-    const trigger = document.querySelector(cfg.modelSelectors.trigger);
-    if (!trigger) return;
-    
+  function normTokens(s) {
+    return String(s || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9.]+/g, " ")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+  }
+
+  function scoreMatch(text, tokens) {
+    const it = normTokens(text);
+    let score = 0;
+    for (const t of tokens) if (it.includes(t)) score++;
+    return score;
+  }
+
+  // Encontra o container do menu/dropdown que acabou de abrir (não o
+  // document inteiro) para não clicar em itens de outra parte da página.
+  function findOpenMenuScope() {
+    const sels = [
+      '[role="menu"]:not([hidden])',
+      '[role="listbox"]:not([hidden])',
+      '[data-radix-popper-content-wrapper]',
+      '[data-state="open"][role]',
+      ".cdk-overlay-pane",
+      "[popover]"
+    ];
+    for (const s of sels) {
+      const els = Array.from(document.querySelectorAll(s)).filter((e) => e.offsetParent !== null);
+      if (els.length) return els[els.length - 1]; // o mais recente aberto
+    }
+    return null;
+  }
+
+  // Seleção de modelo NO SITE do provedor. Tenta, nesta ordem:
+  //  1) modelSelectors.items[modelId] do config.js (seletor exato)
+  //  2) seletores personalizados dos Ajustes (modelTrigger)
+  //  3) fallback genérico: acha um botão "expansível" plausível, abre,
+  //     escopa a busca ao menu que apareceu e casa por texto (fuzzy).
+  // Best-effort: se nada bater, segue sem trocar (usa o modelo já ativo no site).
+  async function selectModel(cfg, modelId, providerCfg) {
+    if (!modelId) return;
+    const label = providerCfg
+      ? ((providerCfg.models || []).find((m) => m.id === modelId) || {}).label || modelId
+      : modelId;
+    const tokens = normTokens(label + " " + modelId);
+    log("selectModel: alvo =", label, "(" + modelId + ")", "tokens =", tokens);
+
+    let trigger = null;
+    if (cfg.modelSelectors && cfg.modelSelectors.trigger) {
+      try {
+        trigger = document.querySelector(cfg.modelSelectors.trigger);
+      } catch (_) {}
+    }
+    if (!trigger) {
+      // Fallback: qualquer botão expansível visível cujo texto sugira ser
+      // o seletor de modelo (nome do provedor, "model", "modelo", versão).
+      const candidates = Array.from(
+        document.querySelectorAll(
+          'button[aria-haspopup], [role="button"][aria-haspopup], button[aria-expanded]'
+        )
+      ).filter((b) => b.offsetParent !== null);
+      trigger =
+        candidates.find((b) => /model|modelo|gpt|claude|gemini|k[0-9]|glm|\d\.\d/i.test(b.textContent || "")) ||
+        candidates[0] ||
+        null;
+      log(candidates.length, "candidato(s) genérico(s) de trigger; escolhido:", trigger ? trigger.textContent.trim().slice(0, 30) : "nenhum");
+    }
+    if (!trigger) {
+      log("selectModel: nenhum seletor de modelo encontrado nesta página — mantendo o modelo já ativo no site.");
+      return;
+    }
+
     try {
       trigger.click();
-      await new Promise(r => setTimeout(r, 400)); // Aguarda animação de menu
-      
-      let opt = document.querySelector(itemsMap[modelId]);
-      
-      // Fallback: se o seletor falhar, procura pelo nome do modelo no texto de itens de menu
+      await new Promise((r) => setTimeout(r, 450)); // aguarda animação do menu
+
+      let opt = null;
+      if (cfg.modelSelectors && cfg.modelSelectors.items && cfg.modelSelectors.items[modelId]) {
+        try {
+          opt = document.querySelector(cfg.modelSelectors.items[modelId]);
+        } catch (_) {}
+      }
       if (!opt) {
-        const queryLabel = modelId.replace(/gemini-|claude-/i, "").replace(/-/g, " ");
-        const items = Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], mat-option, .mat-mdc-menu-item'));
-        opt = items.find(el => el.innerText && el.innerText.toLowerCase().includes(queryLabel.toLowerCase()));
+        const scope = findOpenMenuScope() || document;
+        const items = Array.from(
+          scope.querySelectorAll(
+            '[role="menuitem"],[role="menuitemradio"],[role="option"],mat-option,.mat-mdc-menu-item,li,button'
+          )
+        ).filter((el) => el.offsetParent !== null && el.textContent && el.textContent.trim().length > 0 && el.textContent.trim().length < 80);
+        log("menu aberto:", items.length, "item(ns) visível(is) para casar com", label);
+        let best = null;
+        let bestScore = 0;
+        for (const el of items) {
+          const sc = scoreMatch(el.textContent, tokens);
+          if (sc > bestScore) {
+            bestScore = sc;
+            best = el;
+          }
+        }
+        if (bestScore > 0) opt = best;
       }
-      
+
       if (opt) {
+        log("selectModel: clicando em", opt.textContent.trim().slice(0, 40));
         opt.click();
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 300));
       } else {
-        trigger.click(); // Fecha o menu se não achou
+        log("selectModel: modelo '" + label + "' não apareceu no menu — fechando e seguindo com o modelo atual do site.");
+        trigger.click(); // fecha o menu
       }
-    } catch (_) {}
+    } catch (e) {
+      log("selectModel erro:", e.message);
+    }
   }
 
   // Retorna Promise que resolve após clicar no botão enviar.
@@ -180,10 +311,15 @@
     await new Promise((r) => setTimeout(r, 250));
   }
 
-  async function fillAndSend(cfg, box, text, modelId, images = []) {
-    console.log("[Leitor IA] fillAndSend called, box:", box.tagName, box.className);
+  function composerIsEmpty(box) {
+    const val = box.value !== undefined ? box.value : box.textContent || box.innerText || "";
+    return !val || !val.trim();
+  }
+
+  async function fillAndSend(cfg, box, text, modelId, images = [], providerCfg) {
+    log("fillAndSend: box =", box.tagName, box.className || box.id);
     await insertImageToWeb(cfg, box, images);
-    await selectModel(cfg, modelId);
+    await selectModel(cfg, modelId, providerCfg);
     return new Promise((resolve) => {
       box.focus();
       // Limpa conteúdo anterior
@@ -223,22 +359,45 @@
       // com polling pra achar o botão habilitado (React pode demorar)
       const tryClick = (attempt) => {
         if (attempt > 8) {
+          log("tryClick: nenhum botão 'enviar' habilitado após", attempt, "tentativas — usando Enter.");
           // Último recurso: Enter
           ["keydown", "keypress", "keyup"].forEach((t) =>
             box.dispatchEvent(
               new KeyboardEvent(t, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true })
             )
           );
-          setTimeout(resolve, 300);
+          // Confere se realmente enviou (composer esvaziou). Se não, tenta
+          // um último fallback: botão com ícone logo ao lado da caixa.
+          setTimeout(() => {
+            if (composerIsEmpty(box)) {
+              log("Enter funcionou (composer esvaziou).");
+              return resolve();
+            }
+            log("Enter NÃO esvaziou o composer — tentando botão vizinho como último recurso.");
+            const near = box.closest("form") || box.parentElement || document;
+            const btn = near && near.querySelector('button:not([disabled])');
+            if (btn) {
+              btn.click();
+              log("Cliquei em botão vizinho:", btn.outerHTML.slice(0, 80));
+            } else {
+              log("Nenhum botão vizinho encontrado. Verifique 'Seletores personalizados' nos Ajustes para o botão de enviar deste site.");
+            }
+            setTimeout(resolve, 300);
+          }, 500);
           return;
         }
         let btn = null;
         for (const s of cfg.send || []) {
-          btn = document.querySelector(s);
+          try {
+            btn = document.querySelector(s);
+          } catch (_) {
+            btn = null;
+          }
           if (btn && !btn.disabled) break;
           btn = null;
         }
         if (btn) {
+          log("tryClick: botão enviar encontrado, clicando.", btn.outerHTML.slice(0, 80));
           btn.click();
           setTimeout(resolve, 300);
         } else {
@@ -456,11 +615,14 @@
       }
       // Timeout absoluto: 300s (5min) sem conclusão
       if (t && ticks > 300) return finish(t);
-      // Fail-safe: 40s sem nenhum delta = erro claro
-      if (!t && ticks > 40) {
+      // Fail-safe: 60s sem nenhum delta = erro claro. Se acontecer sempre
+      // neste site, os seletores de "resposta" do config.js provavelmente
+      // mudaram — configure em Ajustes → provedor → Seletores personalizados
+      // (veja os logs "[Leitor IA]" no console DESTA aba, F12 nela).
+      if (!t && ticks > 60) {
         return finish(
           "",
-          "Tempo limite esgotado ou modelo aguardando interação. Verifique a aba ou suas chaves."
+          "Não encontrei a resposta na página. O site pode ter mudado o layout — configure 'Seletores personalizados' nos Ajustes deste provedor (veja o console da aba, F12, por logs [Leitor IA])."
         );
       }
     };
@@ -476,25 +638,33 @@
 
   // ---------- mensagens ----------
   async function handleAsk(m) {
-    const cfg = WEB[hostKey()];
-    if (!cfg) return { ok: false, error: "Esta aba não é um site de modelo." };
+    const host = hostKey();
+    const baseCfg = WEB[host];
+    if (!baseCfg) return { ok: false, error: "Esta aba não é um site de modelo." };
+    const providerCfg = HOST_PROVIDER[host] || null;
+    const custom = await getCustomSelectors(providerCfg && providerCfg.id);
+    const cfg = mergeCfg(baseCfg, custom);
+    if (custom) log("usando seletores personalizados para", providerCfg && providerCfg.id, custom);
+
     const box = findComposer(cfg);
     if (!box) {
       return { ok: false, needLogin: true, reason: loginBarrier(cfg) ? "login" : "nocomposer" };
     }
     // Marca as bolhas antigas do assistente para não serem capturadas pela nova resposta
-    const sels = (cfg.answer || []).concat([
+    const sels = (cfg.answer || []).concat(GENERIC_ANSWERS).concat([
       ".message-content", ".response-content", "model-response", ".model-response-text",
       '[data-message-author="assistant"]', 'div[class*="message"][class*="assistant"]'
     ]);
     for (const s of sels) {
-      document.querySelectorAll(s).forEach((el) => el.classList.add("leitor-ia-old"));
+      try {
+        document.querySelectorAll(s).forEach((el) => el.classList.add("leitor-ia-old"));
+      } catch (_) {}
     }
     // Registra já aqui: fillAndSend demora e o background pode reenviar.
     state.reqId = m.reqId || state.reqId;
     state.text = "";
     state.done = false;
-    await fillAndSend(cfg, box, m.text || "", m.modelId, m.images || []);
+    await fillAndSend(cfg, box, m.text || "", m.modelId, m.images || [], providerCfg);
     // qSnippet usa o final do texto para evitar corte no meio do prompt no fallback
     const qSnippet = (m.text || "").trim().slice(-80);
     watchAnswer(cfg, qSnippet, m.reqId);

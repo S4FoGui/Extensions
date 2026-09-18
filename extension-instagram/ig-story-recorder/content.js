@@ -6,6 +6,21 @@ const APP_ID = "936619743392459";
 const TARGET_W = 1080;
 const TARGET_H = 1920;
 
+// ---------- Ícones próprios (SVG inline, herdam cor via currentColor) ----------
+
+const ICONS = {
+  camera: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 18a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h3.2L9 4h6l1.8 3H21a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="3.6"/></svg>`,
+  film: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M7 5v14M16.5 5v14M2.5 10h4.5M16.5 10H21M2.5 15h4.5M16.5 15H21"/></svg>`,
+  play: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>`,
+  pause: `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4.5" height="14" rx="1"/><rect x="13.5" y="5" width="4.5" height="14" rx="1"/></svg>`,
+  folder: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4.5l2 2.5H19a2 2 0 0 1 2 2z"/></svg>`,
+  music: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 18.5V5.5l11-2v13"/><circle cx="6.5" cy="18.5" r="2.8"/><circle cx="17.5" cy="16.5" r="2.8"/></svg>`,
+};
+
+function icon(name, extraAttrs = "") {
+  return ICONS[name].replace("<svg ", `<svg ${extraAttrs} `);
+}
+
 function getCsrfToken() {
   const m = document.cookie.match(/csrftoken=([^;]+)/);
   return m ? m[1] : null;
@@ -26,13 +41,15 @@ function computeDrawRect(srcW, srcH, dstW, dstH, mode) {
   return { dx: (dstW - dw) / 2, dy: (dstH - dh) / 2, dw, dh };
 }
 
-function drawText(ctx, text, pos, W, H) {
+function drawText(ctx, text, xRel, yRel, W, H) {
   if (!text) return;
   ctx.font = "bold 56px system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.fillStyle = "#fff";
   ctx.strokeStyle = "rgba(0,0,0,0.65)";
   ctx.lineWidth = 7;
+  const centerX = (xRel ?? 0.5) * W;
+  const centerY = (yRel ?? 0.5) * H;
   const maxWidth = W - 120;
   const words = text.split(" ");
   const lines = [];
@@ -48,12 +65,11 @@ function drawText(ctx, text, pos, W, H) {
   }
   if (line) lines.push(line);
   const lineHeight = 66;
-  const centerY = pos === "top" ? 180 : pos === "bottom" ? H - 160 : H / 2;
   const startY = centerY - ((lines.length - 1) * lineHeight) / 2;
   lines.forEach((l, i) => {
     const ly = startY + i * lineHeight;
-    ctx.strokeText(l, W / 2, ly);
-    ctx.fillText(l, W / 2, ly);
+    ctx.strokeText(l, centerX, ly);
+    ctx.fillText(l, centerX, ly);
   });
 }
 
@@ -83,7 +99,7 @@ async function renderPhoto(file, opts, logEl) {
   ctx.fillRect(0, 0, TARGET_W, TARGET_H);
   const r = computeDrawRect(img.naturalWidth, img.naturalHeight, TARGET_W, TARGET_H, opts.aspect);
   ctx.drawImage(img, r.dx, r.dy, r.dw, r.dh);
-  drawText(ctx, opts.text, opts.textPos, TARGET_W, TARGET_H);
+  drawText(ctx, opts.text, opts.textX, opts.textY, TARGET_W, TARGET_H);
 
   if (!opts.audioFile) {
     const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.92));
@@ -154,7 +170,7 @@ async function renderVideo(videoEl, opts, logEl) {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, TARGET_W, TARGET_H);
     ctx.drawImage(videoEl, r.dx, r.dy, r.dw, r.dh);
-    drawText(ctx, opts.text, opts.textPos, TARGET_W, TARGET_H);
+    drawText(ctx, opts.text, opts.textX, opts.textY, TARGET_W, TARGET_H);
     raf = requestAnimationFrame(draw);
   }
 
@@ -385,11 +401,17 @@ function getMyAvatarUrl() {
 function buildTraySvg(avatarUrl) {
   const size = 62;
   const r = size / 2;
+  const camSize = size * 0.46;
+  const camOff = (size - camSize) / 2;
   const inner = avatarUrl
     ? `<image href="${avatarUrl}" x="3" y="3" width="${size - 6}" height="${size - 6}"
         clip-path="url(#igsp-clip)" preserveAspectRatio="xMidYMid slice"/>`
     : `<circle cx="${r}" cy="${r}" r="${r - 3}" fill="#111"/>
-       <text x="${r}" y="${r + 7}" text-anchor="middle" font-size="22">📸</text>`;
+       <g transform="translate(${camOff}, ${camOff}) scale(${camSize / 24})"
+          stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+         <path d="M22 18a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h3.2L9 4h6l1.8 3H21a2 2 0 0 1 2 2z"/>
+         <circle cx="12" cy="13" r="3.6"/>
+       </g>`;
 
   return `
     <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
@@ -424,13 +446,16 @@ function createTrayButton(onClick) {
         display: flex; flex-direction: column; align-items: center; gap: 6px;
         cursor: pointer; width: 74px; font-family: -apple-system, system-ui, sans-serif;
       }
-      .ring { width: 62px; height: 62px; border-radius: 50%; transition: transform .15s ease; }
-      .ring:hover { transform: scale(1.06); }
+      .ring { width: 62px; height: 62px; border-radius: 50%; transition: transform .15s cubic-bezier(.34,1.56,.64,1); }
+      .wrap:hover .ring { transform: scale(1.08); }
+      .wrap:active .ring { transform: scale(.94); }
       svg { display: block; }
       .label {
         font-size: 12px; color: #f5f5f7; max-width: 74px; text-align: center;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        transition: color .15s ease;
       }
+      .wrap:hover .label { color: #fff; }
     </style>
     <div class="wrap">
       <div class="ring">${buildTraySvg(getMyAvatarUrl())}</div>
@@ -444,6 +469,7 @@ function createTrayButton(onClick) {
 function createFloatingButton(onClick) {
   const btn = document.createElement("button");
   btn.id = "igsp-btn";
+  btn.innerHTML = `<span class="igsp-btn-ico">${icon("camera")}</span><span class="igsp-btn-label">Criar Story</span>`;
   btn.onclick = onClick;
   return btn;
 }
@@ -527,21 +553,27 @@ function injectUI() {
 
     /* ===== Botão flutuante (reserva, só usado se a fileira de stories não for encontrada) ===== */
     #igsp-btn {
-      position: fixed; bottom: 26px; right: 26px; z-index: 999999;
-      display: flex; align-items: center; gap: 8px;
+      position: fixed; bottom: 96px; right: 26px; z-index: 999999;
+      display: flex; align-items: center; gap: 10px;
       background: var(--bg-card); color: var(--text);
-      border: 0; border-radius: 999px; padding: 3px;
-      font: 600 14px -apple-system, system-ui, sans-serif; cursor: pointer;
-      box-shadow: 0 8px 24px rgba(0,0,0,.45);
-      transition: transform .15s ease;
+      border: 2px solid transparent; border-radius: 999px; padding: 4px;
+      font: 600 15px -apple-system, system-ui, sans-serif; cursor: pointer;
+      background-image: linear-gradient(var(--bg-card), var(--bg-card)), var(--ig-gradient);
+      background-origin: border-box; background-clip: padding-box, border-box;
+      box-shadow: 0 10px 28px rgba(0,0,0,.5);
+      transition: transform .15s ease, box-shadow .15s ease;
     }
-    #igsp-btn:hover { transform: translateY(-2px); }
-    #igsp-btn::before {
-      content: "📸"; display: grid; place-items: center;
-      width: 34px; height: 34px; border-radius: 50%;
-      background: var(--ig-gradient); font-size: 15px;
+    #igsp-btn:hover { transform: translateY(-3px); box-shadow: 0 14px 32px rgba(0,0,0,.6); }
+    #igsp-btn:active { transform: translateY(-1px) scale(.97); box-shadow: 0 6px 16px rgba(0,0,0,.5); }
+    #igsp-btn .igsp-btn-ico {
+      display: grid; place-items: center; flex-shrink: 0;
+      width: 40px; height: 40px; border-radius: 50%;
+      background: var(--ig-gradient); color: #fff;
+      transition: transform .2s ease;
     }
-    #igsp-btn::after { content: "Criar Story"; padding: 0 14px 0 2px; }
+    #igsp-btn .igsp-btn-ico svg { width: 19px; height: 19px; }
+    #igsp-btn:hover .igsp-btn-ico { transform: rotate(-8deg) scale(1.06); }
+    #igsp-btn .igsp-btn-label { padding: 0 16px 0 4px; }
 
     /* ===== Item da fileira de stories: isolado via Shadow DOM (ver createTrayButton) ===== */
 
@@ -553,11 +585,12 @@ function injectUI() {
     }
     #igsp-modal.hidden { display: none; }
     #igsp-card {
-      position: relative; width: 380px; max-height: 90vh; overflow-y: auto;
+      position: relative; width: 720px; max-width: 95vw; max-height: 90vh;
       background: var(--bg-card); color: var(--text);
-      border-radius: 22px; padding: 24px; font-size: 14px;
+      border-radius: 22px; padding: 22px; font-size: 14px;
       box-shadow: 0 20px 60px rgba(0,0,0,.5);
       border: 1px solid var(--border);
+      display: flex; flex-direction: column;
     }
     /* fio de luz gradiente no topo do card, assinatura visual do Instagram */
     #igsp-card::before {
@@ -565,54 +598,171 @@ function injectUI() {
       border-radius: 0 0 4px 4px; background: var(--ig-gradient);
     }
 
-    #igsp-card h2 {
-      margin: 4px 0 18px; font-size: 17px; font-weight: 700; letter-spacing: -.2px;
+    #igsp-head { display: flex; align-items: center; gap: 10px; margin: 4px 0 16px; flex-shrink: 0; }
+    #igsp-head .ico {
+      width: 32px; height: 32px; border-radius: 10px; flex-shrink: 0;
+      background: var(--ig-gradient); display: grid; place-items: center; color: #fff;
     }
+    #igsp-head .ico svg { width: 16px; height: 16px; }
+    #igsp-card h2 { font-size: 16px; font-weight: 700; letter-spacing: -.2px; }
+    #igsp-card h2 span { display: block; font-size: 11px; font-weight: 500; color: var(--text-muted); margin-top: 1px; }
+
+    /* ===== Corpo: player (esquerda, fixo) + editor (direita, rolável) ===== */
+    #igsp-body { display: flex; gap: 20px; min-height: 0; flex: 1; }
+
+    /* ----- Coluna do player: onde a mídia é exibida e a legenda é posicionada ----- */
+    #igsp-stage-col { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; }
+    #igsp-stage {
+      position: relative; width: 100%; aspect-ratio: 9 / 16; border-radius: 16px;
+      overflow: hidden; background: #000; border: 1px solid var(--border);
+      box-shadow: 0 8px 24px rgba(0,0,0,.4);
+    }
+    #igsp-stage-empty {
+      position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 8px; color: var(--text-muted); text-align: center; padding: 0 16px;
+    }
+    #igsp-stage-empty .ico { width: 30px; height: 30px; opacity: .55; }
+    #igsp-stage-empty .ico svg { width: 100%; height: 100%; }
+    #igsp-stage-empty span:last-child { font-size: 11.5px; line-height: 1.4; }
+    #igsp-stage.igsp-filled #igsp-stage-empty { display: none; }
+
+    #igsp-preview, #igsp-video-wrap {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+    }
+    #igsp-preview { object-fit: contain; }
+    #igsp-preview-v { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+    /* animação de entrada quando a mídia termina de carregar no player */
+    @keyframes igsp-pop-in {
+      from { opacity: 0; transform: scale(.9) translateY(10px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    #igsp-stage.igsp-filled #igsp-preview,
+    #igsp-stage.igsp-filled #igsp-video-wrap {
+      animation: igsp-pop-in .4s cubic-bezier(.34,1.56,.64,1);
+    }
+
+    /* legenda arrastável sobre o player */
+    #igsp-caption {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      max-width: 88%; padding: 4px 6px; font: 700 15px -apple-system, system-ui, sans-serif;
+      color: #fff; text-align: center; text-shadow: 0 1px 3px rgba(0,0,0,.8), 0 0 8px rgba(0,0,0,.5);
+      white-space: pre-wrap; word-break: break-word; cursor: grab; user-select: none;
+      touch-action: none; display: none; border-radius: 6px; transition: box-shadow .12s ease;
+      line-height: 1.3;
+    }
+    #igsp-caption:hover { box-shadow: 0 0 0 2px rgba(255,255,255,.25); }
+    #igsp-caption.igsp-dragging { cursor: grabbing; box-shadow: 0 0 0 2px var(--ig-pink); }
+    #igsp-caption.igsp-visible { display: block; }
+    #igsp-caption-hint {
+      position: absolute; bottom: 6px; left: 0; right: 0; text-align: center;
+      font-size: 9.5px; color: rgba(255,255,255,.55); pointer-events: none;
+    }
+
+    #igsp-video-controls {
+      position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px; background: linear-gradient(to top, rgba(0,0,0,.75), transparent);
+      opacity: 0; transition: opacity .15s ease; z-index: 2;
+    }
+    #igsp-stage:hover #igsp-video-controls,
+    #igsp-stage.igsp-paused #igsp-video-controls { opacity: 1; }
+    #igsp-play {
+      width: 26px; height: 26px; border-radius: 50%; border: 0; flex-shrink: 0;
+      background: #fff; color: #000; cursor: pointer;
+      display: grid; place-items: center; transition: transform .12s ease;
+    }
+    #igsp-play svg { width: 12px; height: 12px; }
+    #igsp-play:hover { transform: scale(1.08); }
+    #igsp-progress {
+      flex: 1; height: 4px; border-radius: 999px; background: rgba(255,255,255,.25);
+      cursor: pointer; position: relative;
+    }
+    #igsp-progress-fill {
+      position: absolute; left: 0; top: 0; bottom: 0; width: 0%; border-radius: 999px;
+      background: var(--ig-gradient);
+    }
+    #igsp-time { font-size: 10.5px; color: #fff; flex-shrink: 0; min-width: 34px; text-align: right; }
+
+    /* ----- Coluna do editor: formulário, rolável ----- */
+    #igsp-editor-col { flex: 1; min-width: 260px; overflow-y: auto; padding-right: 4px; }
+
+    /* ===== Seções: agrupam campos relacionados, separadas por uma linha discreta ===== */
+    .igsp-section { padding: 14px 0; border-bottom: 1px solid var(--border); }
+    .igsp-section:first-of-type { padding-top: 0; }
+    .igsp-section:last-of-type { border-bottom: 0; padding-bottom: 0; }
+    .igsp-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
     /* ===== Labels e campos ===== */
     #igsp-card label {
-      display: block; margin: 16px 0 6px; font-size: 11px; font-weight: 600;
+      display: block; margin: 0 0 6px; font-size: 11px; font-weight: 600;
       letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted);
     }
-    #igsp-card label:first-of-type { margin-top: 0; }
+    .igsp-section + .igsp-section label:first-child { margin-top: 0; }
 
     #igsp-card input[type=file],
     #igsp-card select,
-    #igsp-card input[type=text] {
+    #igsp-card textarea {
       width: 100%; padding: 10px 12px; border-radius: 10px;
       border: 1px solid var(--border); background: var(--bg-field); color: var(--text);
       font-size: 13px; outline: none; transition: border-color .15s ease, box-shadow .15s ease;
-      appearance: none;
+      appearance: none; font-family: inherit;
     }
-    #igsp-card select { cursor: pointer; }
-    #igsp-card input[type=text]::placeholder { color: var(--text-muted); }
-    #igsp-card input[type=text]:focus,
+    #igsp-card select {
+      cursor: pointer;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' stroke='%238e8e93' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+      background-repeat: no-repeat; background-position: right 12px center; background-size: 11px 7px;
+      padding-right: 30px;
+    }
+    #igsp-card textarea {
+      resize: none; overflow: hidden; min-height: 40px; line-height: 1.4;
+    }
+    #igsp-card textarea::placeholder { color: var(--text-muted); }
+    #igsp-card textarea:focus,
     #igsp-card select:focus {
       border-color: var(--ig-pink);
       box-shadow: 0 0 0 3px rgba(225,48,108,.18);
     }
-    /* input[type=file] custom: some navegadores não estilizam o botão nativo bem,
-       então deixamos discreto e dependemos do texto padrão do navegador */
-    #igsp-card input[type=file] { padding: 8px 10px; font-size: 12px; color: var(--text-muted); }
+    .igsp-count { text-align: right; font-size: 10.5px; color: var(--text-muted); margin-top: 4px; }
 
-    #igsp-textpos { margin-top: 8px; }
-
-    /* ===== Preview de mídia ===== */
-    #igsp-preview, #igsp-preview-v {
-      width: 100%; max-height: 220px; margin-top: 10px; object-fit: contain;
-      background: #000; border-radius: 14px; border: 1px solid var(--border);
+    /* input[type=file] custom: um "dropzone" compacto no lugar do botão nativo cru */
+    .igsp-file {
+      position: relative; display: flex; align-items: center; gap: 10px;
+      padding: 10px 12px; border-radius: 10px; border: 1px dashed var(--border);
+      background: var(--bg-field); cursor: pointer; transition: border-color .15s ease, background .15s ease;
     }
+    .igsp-file:hover { border-color: var(--ig-pink); background: #17171a; }
+    .igsp-file .ico { width: 17px; height: 17px; flex-shrink: 0; color: var(--text-muted); }
+    .igsp-file .ico svg { width: 100%; height: 100%; display: block; }
+    .igsp-file:hover .ico { color: var(--ig-pink); }
+    .igsp-file .txt { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .igsp-file input[type=file] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; padding: 0; border: 0;
+    }
+
+    /* ===== Segmented control (atalhos de posição da legenda; arrastar no player também funciona) ===== */
+    .igsp-segmented {
+      display: flex; background: var(--bg-field); border: 1px solid var(--border);
+      border-radius: 10px; padding: 3px; gap: 3px;
+    }
+    .igsp-segmented button {
+      flex: 1; padding: 7px 0; border: 0; border-radius: 7px; background: transparent;
+      color: var(--text-muted); font-size: 12px; font-weight: 600; cursor: pointer;
+      transition: background .15s ease, color .15s ease;
+    }
+    .igsp-segmented button.active { background: var(--ig-gradient); color: #fff; }
+    .igsp-segmented button:hover:not(.active) { color: var(--text); }
 
     /* ===== Botões de ação ===== */
     #igsp-publish {
-      width: 100%; margin-top: 20px; padding: 13px; border: 0; border-radius: 12px;
+      width: 100%; margin-top: 18px; padding: 13px; border: 0; border-radius: 12px;
       background: var(--ig-gradient); color: #fff; font-weight: 700; font-size: 14px;
       cursor: pointer; letter-spacing: .01em;
       box-shadow: 0 6px 18px rgba(225,48,108,.35);
       transition: transform .12s ease, box-shadow .12s ease;
     }
     #igsp-publish:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(225,48,108,.45); }
-    #igsp-publish:active { transform: translateY(0); }
+    #igsp-publish:active { transform: translateY(0) scale(.98); box-shadow: 0 4px 12px rgba(225,48,108,.3); }
+    #igsp-publish:disabled { opacity: .5; cursor: not-allowed; transform: none; }
 
     #igsp-close {
       width: 100%; margin-top: 8px; padding: 10px; border: 1px solid var(--border);
@@ -620,6 +770,24 @@ function injectUI() {
       font-weight: 600; font-size: 13px; cursor: pointer; transition: color .15s ease, border-color .15s ease;
     }
     #igsp-close:hover { color: var(--text); border-color: #45454a; }
+    #igsp-close:active { transform: scale(.98); }
+
+    /* ===== Mobile-first: em telas estreitas o card vira folha inteira, colunas empilham ===== */
+    @media (max-width: 620px) {
+      #igsp-modal { align-items: flex-end; }
+      #igsp-card {
+        width: 100%; max-width: 100%; border-radius: 20px 20px 0 0;
+        max-height: 92vh; padding: 18px 16px 22px;
+      }
+      #igsp-body { flex-direction: column; overflow-y: auto; }
+      #igsp-stage-col { width: 100%; max-width: 260px; margin: 0 auto; }
+      #igsp-editor-col { overflow-y: visible; }
+      .igsp-row { grid-template-columns: 1fr; }
+      #igsp-card input[type=file], #igsp-card select, #igsp-card textarea, .igsp-file {
+        padding: 12px; font-size: 14px;
+      }
+      #igsp-publish, #igsp-close { padding: 14px; }
+    }
 
     /* ===== Log de debug: discreto, monoespaçado, sem chamar atenção ===== */
     #igsp-log {
@@ -637,71 +805,245 @@ function injectUI() {
   modal.className = "hidden";
   modal.innerHTML = `
     <div id="igsp-card">
-      <h2>Criar Story (via PC)</h2>
+      <div id="igsp-head">
+        <div class="ico">${icon("camera")}</div>
+        <h2>Criar Story<span>Publicado direto do PC, sem app</span></h2>
+      </div>
 
-      <label>Arquivo (foto JPG ou vídeo MP4)</label>
-      <input type="file" id="igsp-file" accept="image/jpeg,video/mp4" />
-      <img id="igsp-preview" style="display:none" />
-      <video id="igsp-preview-v" style="display:none" controls></video>
+      <div id="igsp-body">
+        <div id="igsp-stage-col">
+          <div id="igsp-stage">
+            <div id="igsp-stage-empty">
+              <span class="ico">${icon("film")}</span>
+              <span>Selecione uma foto ou vídeo para ver o player aqui</span>
+            </div>
+            <img id="igsp-preview" style="display:none" />
+            <div id="igsp-video-wrap" style="display:none">
+              <video id="igsp-preview-v" muted playsinline></video>
+              <div id="igsp-video-controls">
+                <button id="igsp-play" type="button">${icon("play")}</button>
+                <div id="igsp-progress"><div id="igsp-progress-fill"></div></div>
+                <span id="igsp-time">0:00</span>
+              </div>
+            </div>
+            <div id="igsp-caption"></div>
+          </div>
+        </div>
 
-      <label>Proporção</label>
-      <select id="igsp-aspect">
-        <option value="original">Original (sem reprocessar)</option>
-        <option value="cover">Preencher a tela (corta bordas)</option>
-        <option value="fit">Ajustar (mantém tudo, barras pretas)</option>
-      </select>
+        <div id="igsp-editor-col">
+          <div class="igsp-section">
+            <label>Arquivo (foto JPG ou vídeo MP4)</label>
+            <label class="igsp-file" for="igsp-file">
+              <span class="ico">${icon("folder")}</span>
+              <span class="txt" id="igsp-file-txt">Toque para escolher uma foto ou vídeo</span>
+              <input type="file" id="igsp-file" accept="image/jpeg,video/mp4" />
+            </label>
+          </div>
 
-      <label>Quem pode ver</label>
-      <select id="igsp-audience">
-        <option value="all">Todos</option>
-        <option value="besties">Melhores amigos ⭐</option>
-      </select>
+          <div class="igsp-section">
+            <label>Legenda / texto no story (opcional)</label>
+            <textarea id="igsp-text" placeholder="Escreva algo... use quebras de linha e emojis 🎉" rows="1" maxlength="200"></textarea>
+            <div class="igsp-count"><span id="igsp-count">0</span>/200</div>
+            <label style="margin-top:12px">Posição da legenda <span style="text-transform:none;font-weight:400">— ou arraste direto no player</span></label>
+            <div class="igsp-segmented" id="igsp-textpos">
+              <button type="button" data-value="top">Topo</button>
+              <button type="button" data-value="center" class="active">Centro</button>
+              <button type="button" data-value="bottom">Base</button>
+            </div>
+          </div>
 
-      <label>Texto no story (opcional)</label>
-      <input type="text" id="igsp-text" placeholder="Ex: Bom dia!" />
-      <select id="igsp-textpos">
-        <option value="top">Topo</option>
-        <option value="center" selected>Centro</option>
-        <option value="bottom">Base</option>
-      </select>
+          <div class="igsp-section">
+            <div class="igsp-row">
+              <div>
+                <label>Proporção</label>
+                <select id="igsp-aspect">
+                  <option value="original">Original</option>
+                  <option value="cover">Preencher tela</option>
+                  <option value="fit">Ajustar (fit)</option>
+                </select>
+              </div>
+              <div>
+                <label>Quem pode ver</label>
+                <select id="igsp-audience">
+                  <option value="all">Todos</option>
+                  <option value="besties">Melhores amigos ⭐</option>
+                </select>
+              </div>
+            </div>
+          </div>
 
-      <label>Música (opcional — arquivo de áudio seu, mp3/m4a)</label>
-      <input type="file" id="igsp-audio" accept="audio/*" />
+          <div class="igsp-section">
+            <label>Música (opcional — arquivo de áudio seu, mp3/m4a)</label>
+            <label class="igsp-file" for="igsp-audio">
+              <span class="ico">${icon("music")}</span>
+              <span class="txt" id="igsp-audio-txt">Toque para escolher um áudio</span>
+              <input type="file" id="igsp-audio" accept="audio/*" />
+            </label>
+          </div>
 
-      <button id="igsp-publish">Publicar Story</button>
-      <button id="igsp-close">Fechar</button>
-      <div id="igsp-log"></div>
+          <button id="igsp-publish">Publicar Story</button>
+          <button id="igsp-close">Fechar</button>
+          <div id="igsp-log"></div>
+        </div>
+      </div>
     </div>
   `;
   document.body.appendChild(modal);
 
+  const stage = modal.querySelector("#igsp-stage");
   const fileInput = modal.querySelector("#igsp-file");
+  const fileTxt = modal.querySelector("#igsp-file-txt");
   const previewImg = modal.querySelector("#igsp-preview");
+  const videoWrap = modal.querySelector("#igsp-video-wrap");
   const previewVid = modal.querySelector("#igsp-preview-v");
+  const playBtn = modal.querySelector("#igsp-play");
+  const progressEl = modal.querySelector("#igsp-progress");
+  const progressFill = modal.querySelector("#igsp-progress-fill");
+  const timeEl = modal.querySelector("#igsp-time");
+  const captionEl = modal.querySelector("#igsp-caption");
   const logEl = modal.querySelector("#igsp-log");
   const aspectSel = modal.querySelector("#igsp-aspect");
   const audienceSel = modal.querySelector("#igsp-audience");
   const textInput = modal.querySelector("#igsp-text");
-  const textPosSel = modal.querySelector("#igsp-textpos");
+  const countEl = modal.querySelector("#igsp-count");
+  const textPosWrap = modal.querySelector("#igsp-textpos");
   const audioInput = modal.querySelector("#igsp-audio");
+  const audioTxt = modal.querySelector("#igsp-audio-txt");
   let selectedFile = null;
+  // posição da legenda em fração da tela (0..1); presets abaixo movem esses valores,
+  // e o arraste no player os atualiza livremente
+  let textX = 0.5, textY = 0.5;
+  const presets = { top: 0.11, center: 0.5, bottom: 0.89 };
 
-  mountTrigger(() => modal.classList.remove("hidden"));
-  modal.querySelector("#igsp-close").onclick = () => modal.classList.add("hidden");
+  function setTriggerVisible(visible) {
+    const el = document.getElementById("igsp-btn") || document.getElementById("igsp-tray-btn");
+    if (el) el.style.display = visible ? "" : "none";
+  }
+
+  mountTrigger(() => {
+    setTriggerVisible(false);
+    modal.classList.remove("hidden");
+  });
+  modal.querySelector("#igsp-close").onclick = () => {
+    modal.classList.add("hidden");
+    setTriggerVisible(true);
+  };
+
+  // legenda: textarea que cresce sozinha conforme o texto, com contador,
+  // e espelha o texto ao vivo no overlay arrastável do player
+  function autoGrow() {
+    textInput.style.height = "auto";
+    textInput.style.height = Math.min(textInput.scrollHeight, 140) + "px";
+  }
+  function syncCaption() {
+    const val = textInput.value;
+    captionEl.textContent = val;
+    captionEl.classList.toggle("igsp-visible", val.trim().length > 0);
+  }
+  textInput.addEventListener("input", () => {
+    autoGrow();
+    countEl.textContent = textInput.value.length;
+    syncCaption();
+  });
+
+  function placeCaption(xRel, yRel) {
+    textX = Math.min(0.95, Math.max(0.05, xRel));
+    textY = Math.min(0.95, Math.max(0.05, yRel));
+    captionEl.style.left = textX * 100 + "%";
+    captionEl.style.top = textY * 100 + "%";
+  }
+  placeCaption(0.5, 0.5);
+
+  // controle segmentado: atalhos que movem a legenda para topo/centro/base do player
+  textPosWrap.querySelectorAll("button").forEach((btn) => {
+    btn.onclick = () => {
+      textPosWrap.querySelector("button.active").classList.remove("active");
+      btn.classList.add("active");
+      placeCaption(0.5, presets[btn.dataset.value]);
+    };
+  });
+
+  // arrastar a legenda livremente sobre o player (mouse e toque)
+  let dragging = false, dragOffX = 0, dragOffY = 0;
+  function clearPreset() {
+    const active = textPosWrap.querySelector("button.active");
+    if (active) active.classList.remove("active");
+  }
+  captionEl.addEventListener("pointerdown", (e) => {
+    dragging = true;
+    captionEl.classList.add("igsp-dragging");
+    captionEl.setPointerCapture(e.pointerId);
+    const stageRect = stage.getBoundingClientRect();
+    const capRect = captionEl.getBoundingClientRect();
+    dragOffX = e.clientX - (capRect.left + capRect.width / 2);
+    dragOffY = e.clientY - (capRect.top + capRect.height / 2);
+  });
+  captionEl.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const stageRect = stage.getBoundingClientRect();
+    const x = (e.clientX - dragOffX - stageRect.left) / stageRect.width;
+    const y = (e.clientY - dragOffY - stageRect.top) / stageRect.height;
+    placeCaption(x, y);
+    clearPreset();
+  });
+  function stopDrag(e) {
+    if (!dragging) return;
+    dragging = false;
+    captionEl.classList.remove("igsp-dragging");
+  }
+  captionEl.addEventListener("pointerup", stopDrag);
+  captionEl.addEventListener("pointercancel", stopDrag);
+
+  audioInput.onchange = () => {
+    audioTxt.textContent = audioInput.files[0] ? audioInput.files[0].name : "Toque para escolher um áudio";
+  };
+
+  function formatTime(s) {
+    if (!isFinite(s)) return "0:00";
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60).toString().padStart(2, "0");
+    return `${m}:${sec}`;
+  }
+
+  // player de vídeo customizado: play/pause + barra de progresso clicável
+  playBtn.onclick = () => (previewVid.paused ? previewVid.play() : previewVid.pause());
+  previewVid.addEventListener("play", () => { playBtn.innerHTML = icon("pause"); stage.classList.remove("igsp-paused"); });
+  previewVid.addEventListener("pause", () => { playBtn.innerHTML = icon("play"); stage.classList.add("igsp-paused"); });
+  previewVid.addEventListener("timeupdate", () => {
+    const pct = previewVid.duration ? (previewVid.currentTime / previewVid.duration) * 100 : 0;
+    progressFill.style.width = pct + "%";
+    timeEl.textContent = formatTime(previewVid.currentTime);
+  });
+  previewVid.addEventListener("loadedmetadata", () => { timeEl.textContent = formatTime(previewVid.duration); });
+  progressEl.onclick = (e) => {
+    const rect = progressEl.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    if (previewVid.duration) previewVid.currentTime = pct * previewVid.duration;
+  };
 
   fileInput.onchange = () => {
     selectedFile = fileInput.files[0];
     if (!selectedFile) return;
+    fileTxt.textContent = selectedFile.name;
     const url = URL.createObjectURL(selectedFile);
+
+    // reinicia a animação de entrada do player a cada novo arquivo
+    stage.classList.remove("igsp-filled");
+    void stage.offsetWidth; // força reflow para a animação tocar de novo
+
     if (selectedFile.type.startsWith("video")) {
       previewVid.src = url;
-      previewVid.style.display = "block";
+      videoWrap.style.display = "block";
       previewImg.style.display = "none";
+      stage.classList.add("igsp-paused");
+      playBtn.innerHTML = icon("play");
     } else {
       previewImg.src = url;
       previewImg.style.display = "block";
-      previewVid.style.display = "none";
+      videoWrap.style.display = "none";
+      previewVid.pause();
     }
+    stage.classList.add("igsp-filled");
   };
 
   modal.querySelector("#igsp-publish").onclick = async () => {
@@ -710,11 +1052,15 @@ function injectUI() {
       return;
     }
     logEl.textContent = "";
+    const publishBtn = modal.querySelector("#igsp-publish");
+    publishBtn.disabled = true;
+    publishBtn.textContent = "Publicando...";
 
     const opts = {
       aspect: aspectSel.value,
       text: textInput.value.trim(),
-      textPos: textPosSel.value,
+      textX,
+      textY,
       audioFile: audioInput.files[0] || null
     };
     const audience = audienceSel.value;
@@ -773,6 +1119,9 @@ function injectUI() {
       log(logEl, "✅ Story publicado! Confira seu perfil.");
     } catch (err) {
       log(logEl, "❌ " + err.message);
+    } finally {
+      publishBtn.disabled = false;
+      publishBtn.textContent = "Publicar Story";
     }
   };
 }
