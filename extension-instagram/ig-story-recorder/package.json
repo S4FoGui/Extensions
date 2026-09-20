@@ -1,0 +1,12 @@
+{
+  "name": "ig-story-poster",
+  "version": "4.0.0",
+  "private": true,
+  "description": "IG Story Poster (Desktop) — publica Stories com sticker de link clicável direto do PC.",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

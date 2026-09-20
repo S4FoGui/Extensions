@@ -8,7 +8,15 @@ Instagram achar que você está no celular.
 1. Você escolhe uma foto (JPG) ou vídeo (MP4) no modal próprio da extension.
 2. `rupload_igphoto` / `rupload_igvideo` — sobe o arquivo pra API interna do
    Instagram, usando o cookie de sessão que já está logado no navegador.
-3. `api/v1/media/configure_to_story/` — transforma o upload em Story.
+3. `api/v1/media/validate_reel_url/` — valida a URL antes de criar o sticker.
+4. `api/v1/media/configure_to_story/` — transforma o upload em Story,
+   carregando o sticker de link quando houver um.
+
+> **Sobre o link:** `caption` nunca vira hyperlink, então o link clicável tem
+> que viajar como **sticker** (`tap_models` + `story_sticker_ids`). Mas o link
+> também precisa estar **visível no texto** — então ele é desenhado na imagem e
+> o sticker é alinhado exatamente sobre essa linha. O que você lê é o que você
+> toca. Detalhes em [`DIAGNOSTICO.md`](DIAGNOSTICO.md).
 
 ## ⚠️ Avisos importantes
 - **Não é API oficial**: são endpoints internos, não documentados, usados
@@ -28,6 +36,38 @@ Instagram achar que você está no celular.
 3. Abra instagram.com já logado
 
 ## Novos recursos (v4)
+
+- **Link clicável de verdade (sticker).** Campo *Link clicável — sticker*
+  separado da legenda, igual ao app nativo. Se você colar a URL dentro da
+  legenda, ela é detectada e promovida a sticker automaticamente.
+- **O link aparece no texto e é tocável.** A URL é desenhada na imagem (azul e
+  sublinhada, como já era) e o sticker é alinhado **sobre essa linha** — o
+  `drawText` devolve a posição real da linha e o payload usa esse valor.
+  Resultado: o que está escrito é exatamente o que a pessoa toca.
+- **Posição:** o sticker segue a legenda. Arraste o texto (ou use
+  topo/centro/base) e o link acompanha, com clamp automático para a faixa que
+  realmente recebe toque (10%–80% da altura — fora disso o sticker fica
+  embaixo da barra de perfil ou da barra de resposta).
+- **“Mostrar o link no texto”** (ligado por padrão). Desligando, a mídia é
+  enviada sem redesenho — o link aparece só no sticker do Instagram. Útil em
+  vídeo: desenhar obriga a reprocessar a mídia, que é mais lento e mais sujeito
+  a falha.
+- **Prévia no player:** um chip mostra a URL do sticker antes de publicar.
+- **Payload alinhado com o cliente atual:** `_uid`, `_uuid`, `device_id`,
+  `composition_id`, `camera_session_id`, `supported_capabilities_new`,
+  `media_transformation_info`, `original_media_type`, `edits`.
+- **56 testes de regressão** cobrindo o payload, o alinhamento do sticker e a
+  UI (`npm test` na pasta da extensão).
+
+### Limitação: link clicável só existe em Story
+
+Feed e Reels **não** têm parâmetro de link clicável nem botão de CTA para post
+orgânico — nem na API oficial, nem na privada. É restrição da plataforma, não da
+extensão (veja a seção final do [`DIAGNOSTICO.md`](DIAGNOSTICO.md)).
+Alternativas: primeiro comentário com a URL + fixar, Story companheiro com o
+sticker, ou link na bio.
+
+## Recursos (v3)
 - **Proporção**: "Original" faz upload direto (mais confiável). "Preencher"/
   "Ajustar" reprocessam a mídia num canvas 1080x1920 — mais fiel ao formato
   Story, porém mais pesado e mais sujeito a bug (principalmente em vídeo).
@@ -45,8 +85,43 @@ Instagram achar que você está no celular.
 
 ## Se der erro (400/500)
 O modal mostra um log com a resposta crua da API. Abra o DevTools
-(F12 → Network) ao publicar, procure a chamada `configure_to_story`, e
-compare os campos enviados pelo app oficial (se você tiver acesso a um
-Instagram mobile logado, pode inspecionar via proxy) com os que estão em
-`content.js`, função `configureToStory`. É comum precisar ajustar/adicionar
-campos conforme o Instagram muda a validação.
+(F12 → Network) ao publicar, procure as chamadas `validate_reel_url` e
+`configure_to_story`, e compare os campos enviados pelo app oficial (se você
+tiver acesso a um Instagram mobile logado, pode inspecionar via proxy) com os
+que estão em `story-payload.js`, função `buildConfigureBody`. É comum precisar
+ajustar/adicionar campos conforme o Instagram muda a validação.
+
+O log também imprime uma linha de diagnóstico logo no início:
+
+```
+[payload] story_sticker_ids="link_sticker_default" tap_models=sim
+```
+
+Se aparecer `story_sticker_ids=""` ou `tap_models=não`, o link não vai.
+
+## Testes
+
+Suíte em Node puro (sem dependências obrigatórias) cobrindo normalização de
+URL, detecção/extração de link na legenda, montagem do `tap_model`, o corpo do
+`configure_to_story` (foto/vídeo, com e sem sticker) e a UI num DOM de mentira.
+
+```bash
+npm test     # ou: node --test tests/*.test.js
+```
+
+Os testes de UI usam `jsdom`; se ele não estiver disponível, eles são pulados e
+a suíte de payload roda normalmente. A validação final precisa de uma conta
+real — veja o roteiro no [`DIAGNOSTICO.md`](DIAGNOSTICO.md).
+
+## Estrutura
+
+```
+ig-story-recorder/
+├── manifest.json        # MV3; story-payload.js entra ANTES de content.js
+├── story-payload.js     # montagem do payload (puro, testável)  ← o fix vive aqui
+├── content.js           # UI + upload + orquestração
+├── mp4-muxer.js         # muxer usado no pipeline de vídeo
+├── DIAGNOSTICO.md       # causa raiz do bug do link
+├── tests/               # 44 testes de regressão
+└── README.md
+```
