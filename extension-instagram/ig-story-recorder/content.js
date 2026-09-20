@@ -26,6 +26,36 @@ function getCsrfToken() {
   return m ? m[1] : null;
 }
 
+// id do usuário logado (cookie de sessão) — entra como _uid no payload
+function getUserId() {
+  const m = document.cookie.match(/ds_user_id=([^;]+)/);
+  return m ? m[1] : "";
+}
+
+// O Instagram correlaciona upload → configure → sticker pelo trio
+// (_uid, _uuid, device_id). Sem eles o sticker é aceito com 200 e descartado
+// na renderização. Precisam ser ESTÁVEIS entre publicações: gerar um novo a
+// cada post parece "outro aparelho" e aumenta a chance de challenge.
+const IGSP_IDENTITY_KEY = "igsp_identity_v1";
+
+function getIdentity() {
+  let id = null;
+  try {
+    id = JSON.parse(localStorage.getItem(IGSP_IDENTITY_KEY) || "null");
+  } catch {
+    id = null;
+  }
+  if (!id || !id.uuid || !id.deviceId) {
+    id = { uuid: IGStoryPayload.uuidv4(), deviceId: IGStoryPayload.makeDeviceId() };
+    try {
+      localStorage.setItem(IGSP_IDENTITY_KEY, JSON.stringify(id));
+    } catch {
+      /* storage bloqueado — segue com identidade apenas nesta sessão */
+    }
+  }
+  return id;
+}
+
 function log(el, msg) {
   el.textContent += msg + "\n";
   el.scrollTop = el.scrollHeight;
@@ -367,49 +397,96 @@ async function uploadCoverPhoto(uploadId, sourceEl, w, h, logEl) {
   if (!res.ok) throw new Error("Falha no upload da capa do vídeo");
 }
 
-function buildConfigureBody(uploadId, isVideo, meta, audience, extra = {}) {
-  const now = new Date();
-  const body = new URLSearchParams({
-    upload_id: uploadId,
-    caption: extra.caption || "",
-    source_type: "4",
-    configure_mode: "1",
-    story_media_creation_date: Math.floor(Date.now() / 1000).toString(),
-    client_shared_at: Math.floor(Date.now() / 1000).toString(),
-    client_timestamp: Math.floor(Date.now() / 1000).toString()
+/**
+ * Pré-requisito do sticker de link: `POST /api/v1/media/validate_reel_url/`.
+ * O Instagram valida/allow-lista a URL antes do configure. Pulando essa etapa,
+ * o configure responde 200 e o sticker simplesmente não é instanciado — o
+ * sintoma exato que este fix corrige.
+ *
+ * A validação é best-effort: se o endpoint tiver mudado (404/405 etc.) a
+ * publicação segue, porque o configure ainda pode aceitar. Só abortamos
+ * quando o Instagram reclama especificamente da URL.
+ */
+async function validateReelUrl(url, logEl) {
+  const identity = getIdentity();
+  const res = await fetch("https://www.instagram.com/api/v1/media/validate_reel_url/", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      ...IG_HEADERS(),
+      "content-type": "application/x-www-form-urlencoded"
+    },
+    body: IGStoryPayload.buildValidateReelUrlBody({
+      url,
+      uid: getUserId(),
+      uuid: identity.uuid
+    })
   });
-  if (extra.link) {
-    // link sticker do Story (mesmo campo usado por clientes não oficiais, ex.: instagrapi)
-    // sticker de link via API é ignorado pelo Instagram; o link vai no texto da legenda
+
+  const text = await res.text();
+  log(logEl, `[validate_reel_url] ${res.status} ${text.slice(0, 200)}`);
+
+  let data = {};
+  try { data = JSON.parse(text); } catch { /* resposta não-JSON */ }
+
+  if (!res.ok) {
+    const msg = String(data.message || data.error_title || "");
+    if (/url|link|blocked|invalid|not allowed/i.test(msg)) {
+      throw new Error("O Instagram recusou essa URL: " + msg);
+    }
+    log(logEl, "[validate_reel_url] validação indisponível — seguindo mesmo assim.");
   }
-  if (audience === "besties") {
-    // best-effort / não documentado oficialmente: restringe a Melhores Amigos
-    body.set("audience", "besties");
-  }
-  if (isVideo) {
-    const length = Number((meta.duration || 15).toFixed(2));
-    body.set("poster_frame_index", "0");
-    body.set("length", length.toString());
-    body.set("audio_muted", "false");
-    body.set("filter_type", "0");
-    body.set("width", meta.width.toString());
-    body.set("height", meta.height.toString());
-    body.set(
-      "date_time_original",
-      `${now.getFullYear()}:${String(now.getMonth() + 1).padStart(2, "0")}:${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`
-    );
-    body.set("timezone_offset", (-now.getTimezoneOffset() * 60).toString());
-    body.set("clips", JSON.stringify([{ length, source_type: "4" }]));
-    body.set("extra", JSON.stringify({ source_width: meta.width, source_height: meta.height }));
-  }
-  return body;
+  return data;
+}
+
+function buildConfigureBody(uploadId, isVideo, meta, audience, extra = {}) {
+  const identity = getIdentity();
+  // Toda a montagem vive em story-payload.js (função pura, coberta por testes).
+  // Aqui só injetamos o que depende do browser: sessão, identidade e hora.
+  return IGStoryPayload.buildConfigureBody({
+    uploadId,
+    isVideo,
+    meta,
+    audience,
+    caption: extra.caption || "",
+    link: extra.link || null,
+    uid: getUserId(),
+    uuid: identity.uuid,
+    deviceId: identity.deviceId,
+    sessionId: extra.sessionId || identity.uuid,
+    cameraEntryPoint: extra.cameraEntryPoint
+  });
 }
 
 async function configureToStory(uploadId, isVideo, meta, audience, logEl, extra = {}) {
   const maxTries = isVideo ? 12 : 1;
   const delayMs = 1500;
+  // estável por publicação (não por tentativa): o Instagram usa
+  // composition_id/camera_session_id para agrupar upload + configure + stickers
+  const sessionId = IGStoryPayload.uuidv4();
+  const cameraEntryPoint = Math.floor(Math.random() * 140) + 25;
+  const withLink = !!(extra.link && extra.link.url);
+
+  if (withLink) {
+    log(logEl, `Validando URL do sticker: ${extra.link.url}`);
+    await validateReelUrl(extra.link.url, logEl);
+  }
 
   for (let attempt = 1; attempt <= maxTries; attempt++) {
+    const payload = buildConfigureBody(uploadId, isVideo, meta, audience, {
+      ...extra,
+      sessionId,
+      cameraEntryPoint
+    });
+
+    if (attempt === 1) {
+      log(
+        logEl,
+        `[payload] story_sticker_ids="${payload.get("story_sticker_ids")}" ` +
+          `tap_models=${payload.get("tap_models") ? "sim" : "não"}`
+      );
+    }
+
     const res = await fetch("https://www.instagram.com/api/v1/media/configure_to_story/", {
       method: "POST",
       credentials: "include",
@@ -417,7 +494,7 @@ async function configureToStory(uploadId, isVideo, meta, audience, logEl, extra 
         ...IG_HEADERS(),
         "content-type": "application/x-www-form-urlencoded"
       },
-      body: buildConfigureBody(uploadId, isVideo, meta, audience, extra)
+      body: payload
     });
 
     const text = await res.text();
@@ -433,6 +510,13 @@ async function configureToStory(uploadId, isVideo, meta, audience, logEl, extra 
 
     log(logEl, `[configure_to_story] ${res.status} ${text.slice(0, 300)}`);
     if (!res.ok || data.status === "fail" || data.error_id) {
+      if (withLink) {
+        log(
+          logEl,
+          "Dica: o sticker de link depende de a conta ter o recurso liberado e de a " +
+            "URL não estar bloqueada. Veja o README se o Story sair sem o link."
+        );
+      }
       throw new Error(data.message || data.error_title || "Instagram recusou a publicação (veja o log)");
     }
     return data;
@@ -620,6 +704,11 @@ function mountTrigger(onClick) {
 
 function injectUI() {
   if (document.getElementById("igsp-modal")) return;
+  // story-payload.js é listado antes no manifest; sem ele nada disso funciona
+  if (typeof IGStoryPayload === "undefined") {
+    console.error("[IGSP] story-payload.js não carregou — verifique a ordem em manifest.json");
+    return;
+  }
 
   const style = document.createElement("style");
   style.textContent = `
@@ -747,6 +836,19 @@ function injectUI() {
       font-size: 9.5px; color: rgba(255,255,255,.55); pointer-events: none;
     }
 
+    /* prévia de onde o sticker de link vai cair (não é desenhado na mídia:
+       quem renderiza o sticker é o Instagram, em cima do frame) */
+    #igsp-linkchip {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      display: none; align-items: center; gap: 5px;
+      max-width: 84%; padding: 7px 14px; border-radius: 999px;
+      background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.55);
+      color: #fff; font: 600 11.5px -apple-system, system-ui, sans-serif;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      pointer-events: none; backdrop-filter: blur(6px);
+    }
+    #igsp-linkchip.igsp-visible { display: flex; }
+
     #igsp-video-controls {
       position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 8px;
       padding: 8px 10px; background: linear-gradient(to top, rgba(0,0,0,.75), transparent);
@@ -788,6 +890,7 @@ function injectUI() {
     .igsp-section + .igsp-section label:first-child { margin-top: 0; }
 
     #igsp-card input[type=file],
+    #igsp-card input[type=text],
     #igsp-card select,
     #igsp-card textarea {
       width: 100%; padding: 10px 12px; border-radius: 10px;
@@ -804,13 +907,18 @@ function injectUI() {
     #igsp-card textarea {
       resize: none; overflow: hidden; min-height: 40px; line-height: 1.4;
     }
-    #igsp-card textarea::placeholder { color: var(--text-muted); }
+    #igsp-card textarea::placeholder,
+    #igsp-card input[type=text]::placeholder { color: var(--text-muted); }
+    #igsp-card input[type=text]:focus,
     #igsp-card textarea:focus,
     #igsp-card select:focus {
       border-color: var(--ig-pink);
       box-shadow: 0 0 0 3px rgba(225,48,108,.18);
     }
     .igsp-count { text-align: right; font-size: 10.5px; color: var(--text-muted); margin-top: 4px; }
+    .igsp-hint { margin-top: 7px; font-size: 11px; line-height: 1.4; color: var(--ig-pink); }
+    .igsp-hint[hidden] { display: none; }
+    .igsp-hint.ok { color: #6fbf73; }
 
     /* input[type=file] custom: um "dropzone" compacto no lugar do botão nativo cru */
     .igsp-file {
@@ -871,7 +979,8 @@ function injectUI() {
       #igsp-stage-col { width: 100%; max-width: 260px; margin: 0 auto; }
       #igsp-editor-col { overflow-y: visible; }
       .igsp-row { grid-template-columns: 1fr; }
-      #igsp-card input[type=file], #igsp-card select, #igsp-card textarea, .igsp-file {
+      #igsp-card input[type=file], #igsp-card input[type=text],
+      #igsp-card select, #igsp-card textarea, .igsp-file {
         padding: 12px; font-size: 14px;
       }
       #igsp-publish, #igsp-close { padding: 14px; }
@@ -915,6 +1024,7 @@ function injectUI() {
               </div>
             </div>
             <div id="igsp-caption"></div>
+            <div id="igsp-linkchip"></div>
           </div>
         </div>
 
@@ -934,6 +1044,19 @@ function injectUI() {
             <div class="igsp-count"><span id="igsp-count">0</span>/200</div>
             <label style="margin-top:12px">Posição da legenda <span style="text-transform:none;font-weight:400">— ou arraste direto no player</span></label>
             <div class="igsp-segmented" id="igsp-textpos">
+              <button type="button" data-value="top">Topo</button>
+              <button type="button" data-value="center" class="active">Centro</button>
+              <button type="button" data-value="bottom">Base</button>
+            </div>
+          </div>
+
+          <div class="igsp-section">
+            <label>Link clicável — sticker (opcional)</label>
+            <input type="text" id="igsp-link" inputmode="url" autocomplete="off" spellcheck="false"
+              placeholder="https://seusite.com/oferta" />
+            <div class="igsp-hint" id="igsp-link-hint" hidden></div>
+            <label style="margin-top:12px">Posição do sticker de link</label>
+            <div class="igsp-segmented" id="igsp-linkpos">
               <button type="button" data-value="top">Topo</button>
               <button type="button" data-value="center" class="active">Centro</button>
               <button type="button" data-value="bottom">Base</button>
@@ -995,6 +1118,10 @@ function injectUI() {
   const textInput = modal.querySelector("#igsp-text");
   const countEl = modal.querySelector("#igsp-count");
   const textPosWrap = modal.querySelector("#igsp-textpos");
+  const linkInput = modal.querySelector("#igsp-link");
+  const linkHint = modal.querySelector("#igsp-link-hint");
+  const linkPosWrap = modal.querySelector("#igsp-linkpos");
+  const linkChip = modal.querySelector("#igsp-linkchip");
   const audioInput = modal.querySelector("#igsp-audio");
   const audioTxt = modal.querySelector("#igsp-audio-txt");
   let selectedFile = null;
@@ -1002,6 +1129,12 @@ function injectUI() {
   // e o arraste no player os atualiza livremente
   let textX = 0.5, textY = 0.5;
   const presets = { top: 0.11, center: 0.5, bottom: 0.89 };
+  // posição vertical do sticker de link (x é sempre centralizado)
+  let linkY = 0.5;
+  const linkPresets = { top: 0.16, center: 0.5, bottom: 0.76 };
+  // some só quando o usuário editar o campo de link à mão — aí a detecção
+  // automática na legenda para de sobrescrever o que ele digitou
+  let linkTouched = false;
 
   function setTriggerVisible(visible) {
     const el = document.getElementById("igsp-btn") || document.getElementById("igsp-tray-btn");
@@ -1011,6 +1144,7 @@ function injectUI() {
   mountTrigger(() => {
     setTriggerVisible(false);
     modal.classList.remove("hidden");
+    updateLinkChip();
   });
   modal.querySelector("#igsp-close").onclick = () => {
     modal.classList.add("hidden");
@@ -1023,14 +1157,87 @@ function injectUI() {
     textInput.style.height = "auto";
     textInput.style.height = Math.min(textInput.scrollHeight, 140) + "px";
   }
+  // O sticker de link é uma entidade separada do texto: o Instagram renderiza
+  // a URL em cima do frame. Deixar a URL também queimada em pixels duplica a
+  // informação e vira um texto longo ilegível — por isso ela sai do desenho.
+  function textToDraw() {
+    return IGStoryPayload.textForRender(textInput.value, currentLink());
+  }
+
   function syncCaption() {
-    const val = textInput.value;
+    const val = textToDraw();
     captionEl.textContent = val;
     captionEl.classList.toggle("igsp-visible", val.trim().length > 0);
   }
+
+  function setLinkHint(msg, ok) {
+    linkHint.textContent = msg;
+    linkHint.hidden = !msg;
+    linkHint.classList.toggle("ok", !!ok);
+  }
+
+  function prettyUrl(u) {
+    try {
+      const p = new URL(u);
+      const path = p.pathname === "/" ? "" : p.pathname;
+      return p.hostname.replace(/^www\./, "") + path;
+    } catch {
+      return u;
+    }
+  }
+
+  // link válido e normalizado, ou null (não há sticker)
+  function currentLink() {
+    const raw = linkInput.value.trim();
+    if (!raw) return null;
+    const url = IGStoryPayload.normalizeUrl(raw);
+    return url ? { url, x: 0.5, y: linkY } : null;
+  }
+
+  function updateLinkChip() {
+    const link = currentLink();
+    linkChip.classList.toggle("igsp-visible", !!link);
+    linkChip.textContent = link ? "🔗 " + prettyUrl(link.url) : "";
+    linkChip.style.top = IGStoryPayload.clampStickerY(linkY) * 100 + "%";
+  }
+
+  linkInput.addEventListener("input", () => {
+    linkTouched = true;
+    const raw = linkInput.value.trim();
+    if (!raw) setLinkHint("", true);
+    else if (!IGStoryPayload.normalizeUrl(raw))
+      setLinkHint("URL inválida — use algo como https://seusite.com/oferta", false);
+    else setLinkHint("", true);
+    updateLinkChip();
+    syncCaption();
+  });
+
+  // Se a pessoa colou a URL junto da legenda (era o único jeito antes),
+  // aproveitamos: vira sticker e sai do texto desenhado.
+  function suggestLinkFromCaption() {
+    if (linkTouched) return;
+    if (linkInput.value.trim()) return;
+    const found = IGStoryPayload.findUrl(textInput.value);
+    if (!found) return;
+    linkInput.value = found.url;
+    setLinkHint("Link detectado na legenda → virou sticker clicável (não será desenhado na imagem).", true);
+    updateLinkChip();
+  }
+
+  linkPosWrap.querySelectorAll("button").forEach((btn) => {
+    btn.onclick = () => {
+      const active = linkPosWrap.querySelector("button.active");
+      if (active) active.classList.remove("active");
+      btn.classList.add("active");
+      linkY = linkPresets[btn.dataset.value];
+      updateLinkChip();
+    };
+  });
+
   textInput.addEventListener("input", () => {
     autoGrow();
     countEl.textContent = textInput.value.length;
+    suggestLinkFromCaption();
     syncCaption();
   });
 
@@ -1144,15 +1351,32 @@ function injectUI() {
     publishBtn.disabled = true;
     publishBtn.textContent = "Publicando...";
 
+    // Valida o link ANTES de subir a mídia: errar aqui custa um upload inteiro.
+    const rawLink = linkInput.value.trim();
+    let link = null;
+    if (rawLink) {
+      const url = IGStoryPayload.normalizeUrl(rawLink);
+      if (!url) {
+        log(logEl, "❌ Link inválido. Use uma URL completa, ex.: https://seusite.com/oferta");
+        publishBtn.disabled = false;
+        publishBtn.textContent = "Publicar Story";
+        return;
+      }
+      link = { url, x: 0.5, y: linkY };
+      log(logEl, `🔗 sticker de link: ${url}`);
+    }
+
     const opts = {
       aspect: aspectSel.value,
-      text: textInput.value.trim(),
+      text: textToDraw().trim(),
       textX,
       textY,
       audioFile: audioInput.files[0] || null
     };
     const audience = audienceSel.value;
-    const extra = { caption: opts.text };
+    // `caption` guarda o texto original (com a URL) como metadado do post;
+    // o link CLICÁVEL viaja em tap_models, nunca dentro do texto.
+    const extra = { caption: textInput.value.trim(), link };
     const needsProcessing = opts.aspect !== "original" || opts.text || opts.audioFile;
     const isSourceVideo = selectedFile.type.startsWith("video");
 
@@ -1206,6 +1430,9 @@ function injectUI() {
       log(logEl, "Publicando como Story...");
       await configureToStory(uploadId, isVideo, meta, audience, logEl, extra);
       log(logEl, "✅ Story publicado! Confira seu perfil.");
+      if (link) {
+        log(logEl, `🔗 Sticker de link em ${(IGStoryPayload.clampStickerY(linkY) * 100).toFixed(0)}% da altura — abra no app e toque para testar.`);
+      }
     } catch (err) {
       log(logEl, "❌ " + err.message);
     } finally {
