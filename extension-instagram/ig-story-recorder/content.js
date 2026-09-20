@@ -35,7 +35,7 @@ function log(el, msg) {
 
 function computeDrawRect(srcW, srcH, dstW, dstH, mode) {
   const scale =
-    mode === "fit" ? Math.min(dstW / srcW, dstH / srcH) : Math.max(dstW / srcW, dstH / srcH);
+    mode === "cover" ? Math.max(dstW / srcW, dstH / srcH) : Math.min(dstW / srcW, dstH / srcH);
   const dw = srcW * scale;
   const dh = srcH * scale;
   return { dx: (dstW - dw) / 2, dy: (dstH - dh) / 2, dw, dh };
@@ -45,41 +45,83 @@ function drawText(ctx, text, xRel, yRel, W, H) {
   if (!text) return;
   ctx.font = "bold 56px system-ui, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillStyle = "#fff";
-  ctx.strokeStyle = "rgba(0,0,0,0.65)";
   ctx.lineWidth = 7;
   const centerX = (xRel ?? 0.5) * W;
   const centerY = (yRel ?? 0.5) * H;
   const maxWidth = W - 120;
-  const words = text.split(" ");
-  const lines = [];
-  let line = "";
-  for (const w of words) {
-    const test = line ? line + " " + w : w;
-    if (ctx.measureText(test).width > maxWidth && line) {
-      lines.push(line);
-      line = w;
-    } else {
-      line = test;
+  const urlRe = /(https?:\/\/\S+|www\.\S+|\b[a-z0-9-]+(\.[a-z0-9-]+)*\.(com|net|org|io|me|co|app|dev|link|bio|br|gg)(\/\S*)?)/i;
+
+  // quebra um "palavrão" (URL longa) em pedaços que cabem na largura
+  function splitLong(word) {
+    const parts = [];
+    let cur = "";
+    for (const ch of word) {
+      if (ctx.measureText(cur + ch).width > maxWidth && cur) { parts.push(cur); cur = ch; }
+      else cur += ch;
     }
+    if (cur) parts.push(cur);
+    return parts;
   }
-  if (line) lines.push(line);
+
+  const lines = [];
+  for (const para of text.split(/\r?\n/)) {
+    let line = "";
+    for (const w of para.split(" ").filter(Boolean)) {
+      const pieces = ctx.measureText(w).width > maxWidth ? splitLong(w) : [w];
+      pieces.forEach((piece, idx) => {
+        const test = line && idx === 0 ? line + " " + piece : (line && idx > 0 ? null : piece);
+        if (test !== null && ctx.measureText(test).width <= maxWidth) { line = test; }
+        else { if (line) lines.push(line); line = piece; }
+      });
+    }
+    lines.push(line);
+  }
+
   const lineHeight = 66;
   const startY = centerY - ((lines.length - 1) * lineHeight) / 2;
   lines.forEach((l, i) => {
     const ly = startY + i * lineHeight;
+    const isLink = urlRe.test(l);
+    ctx.strokeStyle = "rgba(0,0,0,0.65)";
     ctx.strokeText(l, centerX, ly);
+    ctx.fillStyle = isLink ? "#8ec5ff" : "#fff";
     ctx.fillText(l, centerX, ly);
+    if (isLink) {
+      const w = ctx.measureText(l).width;
+      ctx.fillRect(centerX - w / 2, ly + 8, w, 4);
+    }
   });
 }
 
 function loadImage(file) {
-  return new Promise((res) => {
+  return new Promise((res, rej) => {
     const img = new Image();
     img.onload = () => res(img);
+    img.onerror = () => rej(new Error("Não consegui ler a imagem (formato não suportado?)"));
     img.src = URL.createObjectURL(file);
   });
 }
+
+// Garante JPEG real (PNG/WebP enviados com x-entity-type image/jpeg são recusados)
+async function toJpeg(file) {
+  const img = await loadImage(file);
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0);
+  const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.92));
+  return { blob, width: canvas.width, height: canvas.height };
+}
+
+const IG_HEADERS = () => ({
+  "x-csrftoken": getCsrfToken(),
+  "x-ig-app-id": APP_ID,
+  "x-instagram-ajax": "1",
+  "x-requested-with": "XMLHttpRequest"
+});
 
 async function decodeAudio(audioFile) {
   const ac = new (window.AudioContext || window.webkitAudioContext)();
@@ -88,7 +130,37 @@ async function decodeAudio(audioFile) {
   return { ac, audioBuf };
 }
 
-// foto estática + texto/proporção -> canvas; se tiver música, vira vídeo (webm)
+// Instagram só aceita MP4 (H.264/AAC). WebM do MediaRecorder gera "media_needs_reupload".
+function pickMp4Recorder(stream) {
+  const candidates = [
+    "video/mp4;codecs=avc1.640028,mp4a.40.2",
+    "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+    "video/mp4;codecs=avc1,mp4a.40.2",
+    "video/mp4"
+  ];
+  const mime = candidates.find((m) => MediaRecorder.isTypeSupported(m));
+  if (!mime) {
+    throw new Error("Seu navegador não grava MP4 (H.264). Atualize o Brave/Chrome ou envie um vídeo .mp4 pronto, sem música/texto/proporção.");
+  }
+  return new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 3_000_000, audioBitsPerSecond: 128_000 });
+}
+
+// diagnóstico: mostra no log o que realmente saiu do MediaRecorder
+async function logMp4Info(blob, recorder, logEl) {
+  const buf = new Uint8Array(await blob.slice(0, 2_000_000).arrayBuffer());
+  const txt = new TextDecoder("latin1").decode(buf);
+  const info = {
+    mime: recorder.mimeType,
+    kb: Math.round(blob.size / 1024),
+    ftyp: txt.includes("ftyp"),
+    h264: txt.includes("avc1"),
+    aac: txt.includes("mp4a"),
+    fragmentado: txt.includes("moof")
+  };
+  log(logEl, "[mp4] " + JSON.stringify(info));
+}
+
+// foto estática + texto/proporção -> canvas; se tiver música, vira vídeo (mp4)
 async function renderPhoto(file, opts, logEl) {
   const img = await loadImage(file);
   const canvas = document.createElement("canvas");
@@ -112,26 +184,34 @@ async function renderPhoto(file, opts, logEl) {
   source.buffer = audioBuf;
   const dest = ac.createMediaStreamDestination();
   source.connect(dest);
-  const durationSec = Math.min(audioBuf.duration, 60);
+  const durationSec = Math.min(audioBuf.duration, 15);
 
   const stream = new MediaStream();
-  canvas.captureStream(2).getVideoTracks().forEach((t) => stream.addTrack(t));
+  canvas.captureStream(30).getVideoTracks().forEach((t) => stream.addTrack(t));
   dest.stream.getAudioTracks().forEach((t) => stream.addTrack(t));
 
-  const recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp9,opus" });
+  const recorder = pickMp4Recorder(stream);
+  // canvas estático não gera frames; redesenha para o encoder receber vídeo contínuo
+  const redraw = setInterval(() => {
+    ctx.drawImage(img, r.dx, r.dy, r.dw, r.dh);
+    drawText(ctx, opts.text, opts.textX, opts.textY, TARGET_W, TARGET_H);
+  }, 66);
   const chunks = [];
   recorder.ondataavailable = (e) => e.data.size > 0 && chunks.push(e.data);
   const stopped = new Promise((res) => (recorder.onstop = res));
   recorder.start();
   source.start();
   await new Promise((r) => setTimeout(r, durationSec * 1000));
+  clearInterval(redraw);
   recorder.stop();
   await stopped;
 
-  return { blob: new Blob(chunks, { type: "video/webm" }), isVideo: true, width: TARGET_W, height: TARGET_H, duration: durationSec, coverCanvas: canvas };
+  const outBlob = new Blob(chunks, { type: "video/mp4" });
+  await logMp4Info(outBlob, recorder, logEl);
+  return { blob: outBlob, isVideo: true, width: TARGET_W, height: TARGET_H, duration: durationSec, coverCanvas: canvas };
 }
 
-// vídeo: re-renderiza frame a frame aplicando proporção/texto/música (webm)
+// vídeo: re-renderiza frame a frame aplicando proporção/texto/música (mp4)
 async function renderVideo(videoEl, opts, logEl) {
   log(logEl, "Re-renderizando vídeo (proporção/texto/música)...");
   const canvas = document.createElement("canvas");
@@ -160,7 +240,7 @@ async function renderVideo(videoEl, opts, logEl) {
     if (at) outStream.addTrack(at);
   }
 
-  const recorder = new MediaRecorder(outStream, { mimeType: "video/webm;codecs=vp9,opus" });
+  const recorder = pickMp4Recorder(outStream);
   const chunks = [];
   recorder.ondataavailable = (e) => e.data.size > 0 && chunks.push(e.data);
   const stopped = new Promise((res) => (recorder.onstop = res));
@@ -185,7 +265,9 @@ async function renderVideo(videoEl, opts, logEl) {
   recorder.stop();
   await stopped;
 
-  return { blob: new Blob(chunks, { type: "video/webm" }), isVideo: true, width: TARGET_W, height: TARGET_H, duration: videoEl.duration, coverCanvas: canvas };
+  const outBlob = new Blob(chunks, { type: "video/mp4" });
+  await logMp4Info(outBlob, recorder, logEl);
+  return { blob: outBlob, isVideo: true, width: TARGET_W, height: TARGET_H, duration: videoEl.duration, coverCanvas: canvas };
 }
 
 // ---------- Upload / publicação ----------
@@ -195,9 +277,9 @@ async function uploadPhoto(blob, w, h, logEl) {
   const name = `fb_uploader_${uploadId}`;
   const res = await fetch(`https://www.instagram.com/rupload_igphoto/${name}`, {
     method: "POST",
+    credentials: "include",
     headers: {
-      "x-csrftoken": getCsrfToken(),
-      "x-ig-app-id": APP_ID,
+      ...IG_HEADERS(),
       "x-entity-type": "image/jpeg",
       "x-entity-name": name,
       "x-entity-length": blob.size.toString(),
@@ -207,7 +289,9 @@ async function uploadPhoto(blob, w, h, logEl) {
         media_type: 1,
         upload_id: uploadId,
         upload_media_height: h,
-        upload_media_width: w
+        upload_media_width: w,
+        xsharing_user_ids: "[]",
+        image_compression: JSON.stringify({ lib_name: "moz", lib_version: "3.1.m", quality: "92" })
       })
     },
     body: blob
@@ -224,9 +308,9 @@ async function uploadVideo(blob, meta, logEl) {
   const entityType = blob.type || "video/mp4";
   const res = await fetch(`https://www.instagram.com/rupload_igvideo/${name}`, {
     method: "POST",
+    credentials: "include",
     headers: {
-      "x-csrftoken": getCsrfToken(),
-      "x-ig-app-id": APP_ID,
+      ...IG_HEADERS(),
       "x-entity-type": entityType,
       "x-entity-name": name,
       "x-entity-length": blob.size.toString(),
@@ -260,9 +344,9 @@ async function uploadCoverPhoto(uploadId, sourceEl, w, h, logEl) {
   const name = `fb_uploader_${uploadId}`;
   const res = await fetch(`https://www.instagram.com/rupload_igphoto/${name}`, {
     method: "POST",
+    credentials: "include",
     headers: {
-      "x-csrftoken": getCsrfToken(),
-      "x-ig-app-id": APP_ID,
+      ...IG_HEADERS(),
       "x-entity-type": "image/jpeg",
       "x-entity-name": name,
       "x-entity-length": blob.size.toString(),
@@ -283,17 +367,21 @@ async function uploadCoverPhoto(uploadId, sourceEl, w, h, logEl) {
   if (!res.ok) throw new Error("Falha no upload da capa do vídeo");
 }
 
-function buildConfigureBody(uploadId, isVideo, meta, audience) {
+function buildConfigureBody(uploadId, isVideo, meta, audience, extra = {}) {
   const now = new Date();
   const body = new URLSearchParams({
     upload_id: uploadId,
-    caption: "",
+    caption: extra.caption || "",
     source_type: "4",
     configure_mode: "1",
     story_media_creation_date: Math.floor(Date.now() / 1000).toString(),
     client_shared_at: Math.floor(Date.now() / 1000).toString(),
     client_timestamp: Math.floor(Date.now() / 1000).toString()
   });
+  if (extra.link) {
+    // link sticker do Story (mesmo campo usado por clientes não oficiais, ex.: instagrapi)
+    // sticker de link via API é ignorado pelo Instagram; o link vai no texto da legenda
+  }
   if (audience === "besties") {
     // best-effort / não documentado oficialmente: restringe a Melhores Amigos
     body.set("audience", "besties");
@@ -317,19 +405,19 @@ function buildConfigureBody(uploadId, isVideo, meta, audience) {
   return body;
 }
 
-async function configureToStory(uploadId, isVideo, meta, audience, logEl) {
+async function configureToStory(uploadId, isVideo, meta, audience, logEl, extra = {}) {
   const maxTries = isVideo ? 12 : 1;
   const delayMs = 1500;
 
   for (let attempt = 1; attempt <= maxTries; attempt++) {
     const res = await fetch("https://www.instagram.com/api/v1/media/configure_to_story/", {
       method: "POST",
+      credentials: "include",
       headers: {
-        "x-csrftoken": getCsrfToken(),
-        "x-ig-app-id": APP_ID,
+        ...IG_HEADERS(),
         "content-type": "application/x-www-form-urlencoded"
       },
-      body: buildConfigureBody(uploadId, isVideo, meta, audience)
+      body: buildConfigureBody(uploadId, isVideo, meta, audience, extra)
     });
 
     const text = await res.text();
@@ -832,17 +920,17 @@ function injectUI() {
 
         <div id="igsp-editor-col">
           <div class="igsp-section">
-            <label>Arquivo (foto JPG ou vídeo MP4)</label>
+            <label>Arquivo (foto JPG/PNG/WebP ou vídeo MP4)</label>
             <label class="igsp-file" for="igsp-file">
               <span class="ico">${icon("folder")}</span>
               <span class="txt" id="igsp-file-txt">Toque para escolher uma foto ou vídeo</span>
-              <input type="file" id="igsp-file" accept="image/jpeg,video/mp4" />
+              <input type="file" id="igsp-file" accept="image/*,video/mp4" />
             </label>
           </div>
 
           <div class="igsp-section">
             <label>Legenda / texto no story (opcional)</label>
-            <textarea id="igsp-text" placeholder="Escreva algo... use quebras de linha e emojis 🎉" rows="1" maxlength="200"></textarea>
+            <textarea id="igsp-text" placeholder="Escreva a legenda e cole o link aqui (ex.: texto + seusite.com)" rows="1" maxlength="200"></textarea>
             <div class="igsp-count"><span id="igsp-count">0</span>/200</div>
             <label style="margin-top:12px">Posição da legenda <span style="text-transform:none;font-weight:400">— ou arraste direto no player</span></label>
             <div class="igsp-segmented" id="igsp-textpos">
@@ -1064,6 +1152,7 @@ function injectUI() {
       audioFile: audioInput.files[0] || null
     };
     const audience = audienceSel.value;
+    const extra = { caption: opts.text };
     const needsProcessing = opts.aspect !== "original" || opts.text || opts.audioFile;
     const isSourceVideo = selectedFile.type.startsWith("video");
 
@@ -1082,9 +1171,9 @@ function injectUI() {
           coverEl = previewVid;
           isVideo = true;
         } else {
-          const img = await loadImage(selectedFile);
-          meta = { width: img.naturalWidth, height: img.naturalHeight };
-          uploadId = await uploadPhoto(selectedFile, meta.width, meta.height, logEl);
+          const jpg = await toJpeg(selectedFile);
+          meta = { width: jpg.width, height: jpg.height };
+          uploadId = await uploadPhoto(jpg.blob, meta.width, meta.height, logEl);
           isVideo = false;
         }
       } else {
@@ -1115,7 +1204,7 @@ function injectUI() {
       }
 
       log(logEl, "Publicando como Story...");
-      await configureToStory(uploadId, isVideo, meta, audience, logEl);
+      await configureToStory(uploadId, isVideo, meta, audience, logEl, extra);
       log(logEl, "✅ Story publicado! Confira seu perfil.");
     } catch (err) {
       log(logEl, "❌ " + err.message);
