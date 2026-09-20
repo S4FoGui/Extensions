@@ -12,10 +12,11 @@ Instagram achar que você está no celular.
 4. `api/v1/media/configure_to_story/` — transforma o upload em Story,
    carregando o sticker de link quando houver um.
 
-> **Sobre o link:** link clicável em Story é um **sticker**, não texto. A
-> extensão manda `tap_models` (geometria + URL) e `story_sticker_ids`, nunca a
-> URL dentro da legenda — legenda nunca vira hyperlink, em nenhum formato.
-> Detalhes em [`DIAGNOSTICO.md`](DIAGNOSTICO.md).
+> **Sobre o link:** `caption` nunca vira hyperlink, então o link clicável tem
+> que viajar como **sticker** (`tap_models` + `story_sticker_ids`). Mas o link
+> também precisa estar **visível no texto** — então ele é desenhado na imagem e
+> o sticker é alinhado exatamente sobre essa linha. O que você lê é o que você
+> toca. Detalhes em [`DIAGNOSTICO.md`](DIAGNOSTICO.md).
 
 ## ⚠️ Avisos importantes
 - **Não é API oficial**: são endpoints internos, não documentados, usados
@@ -36,19 +37,27 @@ Instagram achar que você está no celular.
 
 ## Novos recursos (v4)
 
-- **Link clicável de verdade (sticker).** Novo campo *Link clicável — sticker*,
+- **Link clicável de verdade (sticker).** Campo *Link clicável — sticker*
   separado da legenda, igual ao app nativo. Se você colar a URL dentro da
-  legenda, ela é detectada e promovida a sticker automaticamente — e sai do
-  texto desenhado na imagem, porque quem mostra a URL passa a ser o Instagram.
-- **Posição do sticker** (topo / centro / base), com clamp automático para a
-  faixa que realmente recebe toque (10%–80% da altura — fora disso o sticker
-  fica embaixo da barra de perfil ou da barra de resposta).
-- **Prévia no player:** um chip mostra onde o sticker vai cair antes de publicar.
+  legenda, ela é detectada e promovida a sticker automaticamente.
+- **O link aparece no texto e é tocável.** A URL é desenhada na imagem (azul e
+  sublinhada, como já era) e o sticker é alinhado **sobre essa linha** — o
+  `drawText` devolve a posição real da linha e o payload usa esse valor.
+  Resultado: o que está escrito é exatamente o que a pessoa toca.
+- **Posição:** o sticker segue a legenda. Arraste o texto (ou use
+  topo/centro/base) e o link acompanha, com clamp automático para a faixa que
+  realmente recebe toque (10%–80% da altura — fora disso o sticker fica
+  embaixo da barra de perfil ou da barra de resposta).
+- **“Mostrar o link no texto”** (ligado por padrão). Desligando, a mídia é
+  enviada sem redesenho — o link aparece só no sticker do Instagram. Útil em
+  vídeo: desenhar obriga a reprocessar a mídia, que é mais lento e mais sujeito
+  a falha.
+- **Prévia no player:** um chip mostra a URL do sticker antes de publicar.
 - **Payload alinhado com o cliente atual:** `_uid`, `_uuid`, `device_id`,
   `composition_id`, `camera_session_id`, `supported_capabilities_new`,
   `media_transformation_info`, `original_media_type`, `edits`.
-- **44 testes de regressão** cobrindo a montagem do payload e a UI
-  (`npm test` na pasta da extensão).
+- **56 testes de regressão** cobrindo o payload, o alinhamento do sticker e a
+  UI (`npm test` na pasta da extensão).
 
 ### Limitação: link clicável só existe em Story
 

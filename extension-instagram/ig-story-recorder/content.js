@@ -71,8 +71,21 @@ function computeDrawRect(srcW, srcH, dstW, dstH, mode) {
   return { dx: (dstW - dw) / 2, dy: (dstH - dh) / 2, dw, dh };
 }
 
-function drawText(ctx, text, xRel, yRel, W, H) {
-  if (!text) return;
+/**
+ * Desenha a legenda no canvas.
+ *
+ * @param {string} [linkUrl] URL do sticker. Quando informada, ela é
+ *   acrescentada ao texto caso ainda não apareça nele — o link precisa estar
+ *   visível no Story, e é sobre essa linha que o sticker é alinhado.
+ * @returns {number|null} posição vertical (0..1) do centro da linha do link,
+ *   ou null quando não há link. É o que alinha sticker e texto desenhado.
+ */
+function drawText(ctx, text, xRel, yRel, W, H, linkUrl) {
+  let body = typeof text === "string" ? text : "";
+  if (linkUrl && !body.split(/\r?\n/).some((line) => IGStoryPayload.lineHasUrl(line, linkUrl))) {
+    body = body ? body + "\n" + linkUrl : linkUrl;
+  }
+  if (!body) return null;
   ctx.font = "bold 56px system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.lineWidth = 7;
@@ -93,34 +106,50 @@ function drawText(ctx, text, xRel, yRel, W, H) {
     return parts;
   }
 
+  // cada linha guarda se veio do parágrafo da URL — é assim que achamos a
+  // linha do link mesmo quando ela foi quebrada em várias por falta de largura
+  const paras = body.split(/\r?\n/);
+  const linkPara = linkUrl
+    ? paras.findIndex((p) => IGStoryPayload.lineHasUrl(p, linkUrl))
+    : -1;
+
   const lines = [];
-  for (const para of text.split(/\r?\n/)) {
+  paras.forEach((para, pi) => {
     let line = "";
+    const push = (t) => lines.push({ text: t, fromLink: pi === linkPara });
     for (const w of para.split(" ").filter(Boolean)) {
       const pieces = ctx.measureText(w).width > maxWidth ? splitLong(w) : [w];
       pieces.forEach((piece, idx) => {
         const test = line && idx === 0 ? line + " " + piece : (line && idx > 0 ? null : piece);
         if (test !== null && ctx.measureText(test).width <= maxWidth) { line = test; }
-        else { if (line) lines.push(line); line = piece; }
+        else { if (line) push(line); line = piece; }
       });
     }
-    lines.push(line);
-  }
+    push(line);
+  });
 
   const lineHeight = 66;
   const startY = centerY - ((lines.length - 1) * lineHeight) / 2;
+  let linkLineY = null;
+
   lines.forEach((l, i) => {
     const ly = startY + i * lineHeight;
-    const isLink = urlRe.test(l);
+    const isLink = l.fromLink || urlRe.test(l.text);
+    if (l.fromLink && linkLineY === null) {
+      // baseline -> centro visual da linha
+      linkLineY = (ly - lineHeight * 0.3) / H;
+    }
     ctx.strokeStyle = "rgba(0,0,0,0.65)";
-    ctx.strokeText(l, centerX, ly);
+    ctx.strokeText(l.text, centerX, ly);
     ctx.fillStyle = isLink ? "#8ec5ff" : "#fff";
-    ctx.fillText(l, centerX, ly);
+    ctx.fillText(l.text, centerX, ly);
     if (isLink) {
-      const w = ctx.measureText(l).width;
+      const w = ctx.measureText(l.text).width;
       ctx.fillRect(centerX - w / 2, ly + 8, w, 4);
     }
   });
+
+  return linkLineY;
 }
 
 function loadImage(file) {
@@ -201,11 +230,11 @@ async function renderPhoto(file, opts, logEl) {
   ctx.fillRect(0, 0, TARGET_W, TARGET_H);
   const r = computeDrawRect(img.naturalWidth, img.naturalHeight, TARGET_W, TARGET_H, opts.aspect);
   ctx.drawImage(img, r.dx, r.dy, r.dw, r.dh);
-  drawText(ctx, opts.text, opts.textX, opts.textY, TARGET_W, TARGET_H);
+  let linkLineY = drawText(ctx, opts.text, opts.textX, opts.textY, TARGET_W, TARGET_H, opts.linkUrl);
 
   if (!opts.audioFile) {
     const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.92));
-    return { blob, isVideo: false, width: TARGET_W, height: TARGET_H };
+    return { blob, isVideo: false, width: TARGET_W, height: TARGET_H, linkLineY };
   }
 
   log(logEl, "Gerando vídeo (foto + música)...");
@@ -224,7 +253,7 @@ async function renderPhoto(file, opts, logEl) {
   // canvas estático não gera frames; redesenha para o encoder receber vídeo contínuo
   const redraw = setInterval(() => {
     ctx.drawImage(img, r.dx, r.dy, r.dw, r.dh);
-    drawText(ctx, opts.text, opts.textX, opts.textY, TARGET_W, TARGET_H);
+    linkLineY = drawText(ctx, opts.text, opts.textX, opts.textY, TARGET_W, TARGET_H, opts.linkUrl);
   }, 66);
   const chunks = [];
   recorder.ondataavailable = (e) => e.data.size > 0 && chunks.push(e.data);
@@ -238,7 +267,10 @@ async function renderPhoto(file, opts, logEl) {
 
   const outBlob = new Blob(chunks, { type: "video/mp4" });
   await logMp4Info(outBlob, recorder, logEl);
-  return { blob: outBlob, isVideo: true, width: TARGET_W, height: TARGET_H, duration: durationSec, coverCanvas: canvas };
+  return {
+    blob: outBlob, isVideo: true, width: TARGET_W, height: TARGET_H,
+    duration: durationSec, coverCanvas: canvas, linkLineY
+  };
 }
 
 // vídeo: re-renderiza frame a frame aplicando proporção/texto/música (mp4)
@@ -276,11 +308,12 @@ async function renderVideo(videoEl, opts, logEl) {
   const stopped = new Promise((res) => (recorder.onstop = res));
 
   let raf;
+  let linkLineY = null;
   function draw() {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, TARGET_W, TARGET_H);
     ctx.drawImage(videoEl, r.dx, r.dy, r.dw, r.dh);
-    drawText(ctx, opts.text, opts.textX, opts.textY, TARGET_W, TARGET_H);
+    linkLineY = drawText(ctx, opts.text, opts.textX, opts.textY, TARGET_W, TARGET_H, opts.linkUrl);
     raf = requestAnimationFrame(draw);
   }
 
@@ -297,7 +330,10 @@ async function renderVideo(videoEl, opts, logEl) {
 
   const outBlob = new Blob(chunks, { type: "video/mp4" });
   await logMp4Info(outBlob, recorder, logEl);
-  return { blob: outBlob, isVideo: true, width: TARGET_W, height: TARGET_H, duration: videoEl.duration, coverCanvas: canvas };
+  return {
+    blob: outBlob, isVideo: true, width: TARGET_W, height: TARGET_H,
+    duration: videoEl.duration, coverCanvas: canvas, linkLineY
+  };
 }
 
 // ---------- Upload / publicação ----------
@@ -920,6 +956,19 @@ function injectUI() {
     .igsp-hint[hidden] { display: none; }
     .igsp-hint.ok { color: #6fbf73; }
 
+    /* checkbox: precisa vencer a regra de label do card (id+type), que deixa
+       todo label em uppercase — aqui o texto é uma frase */
+    #igsp-card label.igsp-check {
+      display: flex; align-items: flex-start; gap: 8px; cursor: pointer;
+      margin: 12px 0 0; padding: 0; text-transform: none; letter-spacing: 0;
+      font-size: 11.5px; font-weight: 500; color: var(--text-muted); line-height: 1.4;
+    }
+    #igsp-card label.igsp-check:hover { color: var(--text); }
+    #igsp-card label.igsp-check input {
+      width: 14px; height: 14px; margin: 1px 0 0; padding: 0; flex-shrink: 0;
+      accent-color: var(--ig-pink); cursor: pointer; border: 0;
+    }
+
     /* input[type=file] custom: um "dropzone" compacto no lugar do botão nativo cru */
     .igsp-file {
       position: relative; display: flex; align-items: center; gap: 10px;
@@ -1055,12 +1104,11 @@ function injectUI() {
             <input type="text" id="igsp-link" inputmode="url" autocomplete="off" spellcheck="false"
               placeholder="https://seusite.com/oferta" />
             <div class="igsp-hint" id="igsp-link-hint" hidden></div>
-            <label style="margin-top:12px">Posição do sticker de link</label>
-            <div class="igsp-segmented" id="igsp-linkpos">
-              <button type="button" data-value="top">Topo</button>
-              <button type="button" data-value="center" class="active">Centro</button>
-              <button type="button" data-value="bottom">Base</button>
-            </div>
+            <label class="igsp-check" for="igsp-link-intext">
+              <input type="checkbox" id="igsp-link-intext" checked />
+              <span>Mostrar o link no texto. O sticker é alinhado em cima dele —
+                o que aparece escrito é exatamente o que a pessoa toca.</span>
+            </label>
           </div>
 
           <div class="igsp-section">
@@ -1120,7 +1168,7 @@ function injectUI() {
   const textPosWrap = modal.querySelector("#igsp-textpos");
   const linkInput = modal.querySelector("#igsp-link");
   const linkHint = modal.querySelector("#igsp-link-hint");
-  const linkPosWrap = modal.querySelector("#igsp-linkpos");
+  const linkInTextChk = modal.querySelector("#igsp-link-intext");
   const linkChip = modal.querySelector("#igsp-linkchip");
   const audioInput = modal.querySelector("#igsp-audio");
   const audioTxt = modal.querySelector("#igsp-audio-txt");
@@ -1129,9 +1177,11 @@ function injectUI() {
   // e o arraste no player os atualiza livremente
   let textX = 0.5, textY = 0.5;
   const presets = { top: 0.11, center: 0.5, bottom: 0.89 };
-  // posição vertical do sticker de link (x é sempre centralizado)
+  // Posição de DESENHO do link (0..1). Quando o link é desenhado no texto, o
+  // sticker é alinhado automaticamente sobre essa linha (drawText devolve a
+  // posição real). Aqui fica o valor de fallback, usado quando a mídia não
+  // passa pelo canvas (envio direto) — nesse caso acompanha a legenda.
   let linkY = 0.5;
-  const linkPresets = { top: 0.16, center: 0.5, bottom: 0.76 };
   // some só quando o usuário editar o campo de link à mão — aí a detecção
   // automática na legenda para de sobrescrever o que ele digitou
   let linkTouched = false;
@@ -1160,8 +1210,14 @@ function injectUI() {
   // O sticker de link é uma entidade separada do texto: o Instagram renderiza
   // a URL em cima do frame. Deixar a URL também queimada em pixels duplica a
   // informação e vira um texto longo ilegível — por isso ela sai do desenho.
+  /**
+   * Texto que vai para os pixels. Com sticker de link, a URL entra no texto
+   * (se já não estiver) — é o que a pessoa vê, e o sticker é alinhado sobre
+   * essa linha para que ver e tocar sejam a mesma coisa.
+   */
   function textToDraw() {
-    return IGStoryPayload.textForRender(textInput.value, currentLink());
+    const link = linkInTextChk.checked ? currentLink() : null;
+    return IGStoryPayload.textForRender(textInput.value, link);
   }
 
   function syncCaption() {
@@ -1212,6 +1268,8 @@ function injectUI() {
     syncCaption();
   });
 
+  linkInTextChk.addEventListener("change", syncCaption);
+
   // Se a pessoa colou a URL junto da legenda (era o único jeito antes),
   // aproveitamos: vira sticker e sai do texto desenhado.
   function suggestLinkFromCaption() {
@@ -1220,19 +1278,9 @@ function injectUI() {
     const found = IGStoryPayload.findUrl(textInput.value);
     if (!found) return;
     linkInput.value = found.url;
-    setLinkHint("Link detectado na legenda → virou sticker clicável (não será desenhado na imagem).", true);
+    setLinkHint("Link detectado na legenda → também virou sticker clicável.", true);
     updateLinkChip();
   }
-
-  linkPosWrap.querySelectorAll("button").forEach((btn) => {
-    btn.onclick = () => {
-      const active = linkPosWrap.querySelector("button.active");
-      if (active) active.classList.remove("active");
-      btn.classList.add("active");
-      linkY = linkPresets[btn.dataset.value];
-      updateLinkChip();
-    };
-  });
 
   textInput.addEventListener("input", () => {
     autoGrow();
@@ -1246,6 +1294,10 @@ function injectUI() {
     textY = Math.min(0.95, Math.max(0.05, yRel));
     captionEl.style.left = textX * 100 + "%";
     captionEl.style.top = textY * 100 + "%";
+    // o link acompanha a legenda: é o fallback quando a mídia não passa pelo
+    // canvas e também o valor provisório mostrado no chip
+    linkY = textY;
+    updateLinkChip();
   }
   placeCaption(0.5, 0.5);
 
@@ -1351,37 +1403,44 @@ function injectUI() {
     publishBtn.disabled = true;
     publishBtn.textContent = "Publicando...";
 
+    const isSourceVideo = selectedFile.type.startsWith("video");
+
     // Valida o link ANTES de subir a mídia: errar aqui custa um upload inteiro.
+    let linkUrl = null;
     const rawLink = linkInput.value.trim();
-    let link = null;
     if (rawLink) {
-      const url = IGStoryPayload.normalizeUrl(rawLink);
-      if (!url) {
+      linkUrl = IGStoryPayload.normalizeUrl(rawLink);
+      if (!linkUrl) {
         log(logEl, "❌ Link inválido. Use uma URL completa, ex.: https://seusite.com/oferta");
         publishBtn.disabled = false;
         publishBtn.textContent = "Publicar Story";
         return;
       }
-      link = { url, x: 0.5, y: linkY };
-      log(logEl, `🔗 sticker de link: ${url}`);
+      log(logEl, `🔗 sticker de link: ${linkUrl}`);
+    }
+
+    // Com o checkbox ligado a URL entra no texto desenhado e o sticker é
+    // alinhado sobre ela. Desligado, só o sticker do Instagram aparece.
+    const linkInText = !!linkUrl && linkInTextChk.checked;
+    if (linkInText && isSourceVideo && !textInput.value.trim()) {
+      log(logEl, "Aviso: desenhar o link obriga a reprocessar o vídeo (mais lento e mais sujeito a falha).");
     }
 
     const opts = {
       aspect: aspectSel.value,
       text: textToDraw().trim(),
+      linkUrl: linkInText ? linkUrl : null,
       textX,
       textY,
       audioFile: audioInput.files[0] || null
     };
     const audience = audienceSel.value;
-    // `caption` guarda o texto original (com a URL) como metadado do post;
-    // o link CLICÁVEL viaja em tap_models, nunca dentro do texto.
-    const extra = { caption: textInput.value.trim(), link };
     const needsProcessing = opts.aspect !== "original" || opts.text || opts.audioFile;
-    const isSourceVideo = selectedFile.type.startsWith("video");
 
     try {
       let uploadId, isVideo, meta, coverEl;
+      // posição real da linha do link no canvas (só existe se houve render)
+      let linkLineY = null;
 
       if (!needsProcessing) {
         // caminho direto (já validado antes) — sem reprocessar nada
@@ -1413,6 +1472,7 @@ function injectUI() {
         }
         isVideo = result.isVideo;
         meta = { width: result.width, height: result.height, duration: result.duration };
+        linkLineY = result.linkLineY ?? null;
 
         if (isVideo) {
           uploadId = await uploadVideo(result.blob, meta, logEl);
@@ -1427,11 +1487,25 @@ function injectUI() {
         await uploadCoverPhoto(uploadId, coverEl, meta.width, meta.height, logEl);
       }
 
+      // O sticker cai sobre a linha do link que foi desenhada — o que a pessoa
+      // lê é o que ela toca. Sem render (envio direto), acompanha a legenda.
+      let link = null;
+      if (linkUrl) {
+        const y = linkLineY != null ? linkLineY : IGStoryPayload.clampStickerY(textY);
+        link = { url: linkUrl, x: 0.5, y };
+        log(logEl, `🔗 sticker alinhado em ${(IGStoryPayload.clampStickerY(y) * 100).toFixed(0)}% da altura`);
+      }
+
       log(logEl, "Publicando como Story...");
-      await configureToStory(uploadId, isVideo, meta, audience, logEl, extra);
+      // `caption` guarda o texto digitado como metadado; o link CLICÁVEL viaja
+      // em tap_models — é o sticker que abre a página, não o texto.
+      await configureToStory(uploadId, isVideo, meta, audience, logEl, {
+        caption: textInput.value.trim(),
+        link
+      });
       log(logEl, "✅ Story publicado! Confira seu perfil.");
       if (link) {
-        log(logEl, `🔗 Sticker de link em ${(IGStoryPayload.clampStickerY(linkY) * 100).toFixed(0)}% da altura — abra no app e toque para testar.`);
+        log(logEl, "🔗 Abra no app e toque no link para testar.");
       }
     } catch (err) {
       log(logEl, "❌ " + err.message);

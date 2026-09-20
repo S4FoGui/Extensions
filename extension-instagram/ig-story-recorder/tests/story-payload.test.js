@@ -123,25 +123,47 @@ test("textForRender: sem sticker, o texto vai inteiro para os pixels", () => {
   assert.equal(P.textForRender(t, {}), t);
 });
 
-test("textForRender: com sticker, a URL some do texto desenhado", () => {
+test("textForRender: com sticker, a URL continua no texto (é o que se vê)", () => {
   const t = "Drop novo → https://loja.com/drop";
-  assert.equal(P.textForRender(t, { url: "https://loja.com/drop" }), "Drop novo →");
+  assert.equal(P.textForRender(t, { url: "https://loja.com/drop" }), t);
 });
 
-test("textForRender: URL diferente no campo não apaga a do texto", () => {
-  const t = "veja https://loja.com/a";
-  assert.equal(P.textForRender(t, { url: "https://outra.com/b" }), t);
-});
-
-test("textForRender: legenda que era só a URL vira vazia com sticker ativo", () => {
-  assert.equal(P.textForRender("https://loja.com/x", { url: "https://loja.com/x" }), "");
-});
-
-test("textForRender: host pelado também é reconhecido", () => {
+test("textForRender: URL ausente do texto é acrescentada em linha própria", () => {
   assert.equal(
-    P.textForRender("acesse loja.com.br/hoje", { url: "https://loja.com.br/hoje" }),
-    "acesse"
+    P.textForRender("Drop novo", { url: "https://loja.com/drop" }),
+    "Drop novo\nhttps://loja.com/drop"
   );
+});
+
+test("textForRender: sem legenda, o texto vira só a URL", () => {
+  assert.equal(P.textForRender("", { url: "https://loja.com/x" }), "https://loja.com/x");
+  assert.equal(P.textForRender("   ", { url: "https://loja.com/x" }), "https://loja.com/x");
+});
+
+test("textForRender: reconhece a mesma URL escrita sem o https://", () => {
+  // a pessoa digitou "loja.com/drop" na legenda; o sticker guarda a forma
+  // normalizada. Não deve duplicar.
+  assert.equal(P.textForRender("acesse loja.com/drop", { url: "https://loja.com/drop" }), "acesse loja.com/drop");
+});
+
+test("textForRender: URL diferente da do sticker é preservada e a dele entra", () => {
+  assert.equal(
+    P.textForRender("veja https://loja.com/a", { url: "https://outra.com/b" }),
+    "veja https://loja.com/a\nhttps://outra.com/b"
+  );
+});
+
+test("textForRender: não duplica quando a URL já está em qualquer linha", () => {
+  const t = "linha 1\nhttps://loja.com/drop\nlinha 3";
+  assert.equal(P.textForRender(t, { url: "https://loja.com/drop" }), t);
+});
+
+test("lineHasUrl: compara direto e pela forma normalizada", () => {
+  assert.equal(P.lineHasUrl("https://loja.com/x", "https://loja.com/x"), true);
+  assert.equal(P.lineHasUrl("veja loja.com/x agora", "https://loja.com/x"), true);
+  assert.equal(P.lineHasUrl("sem link aqui", "https://loja.com/x"), false);
+  assert.equal(P.lineHasUrl("https://outra.com/y", "https://loja.com/x"), false);
+  assert.equal(P.lineHasUrl("", "https://loja.com/x"), false);
 });
 
 // ------------------------------------------------------------ clampStickerY

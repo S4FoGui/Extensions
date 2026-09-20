@@ -37,13 +37,15 @@
   ];
 
   // Geometria padrão do sticker de link, em fração do frame (0..1).
-  // O app nativo usa algo nessa ordem de grandeza: faixa horizontal larga e rasa.
+  // O sticker é alinhado sobre a linha onde a URL foi desenhada, então a
+  // altura acompanha a altura de uma linha de legenda (66px num canvas de
+  // 1920 = ~0.034) com folga para virar um alvo de toque confortável.
   const LINK_STICKER_DEFAULTS = {
     x: 0.5,
     y: 0.5,
     z: 0,
-    width: 0.64,
-    height: 0.1,
+    width: 0.7,
+    height: 0.07,
     rotation: 0.0
   };
 
@@ -159,19 +161,34 @@
   }
 
   /**
-   * Texto que deve ser desenhado em pixels quando há sticker de link ativo.
+   * Texto que vai ser desenhado em pixels quando há sticker de link ativo.
    *
-   * Com o sticker ativo, quem mostra a URL é o Instagram — deixá-la também
-   * queimada no canvas duplica a informação e vira um texto longo ilegível.
-   * Só removemos quando a URL do texto é EXATAMENTE a do sticker: se a pessoa
-   * digitou um link diferente no campo, respeitamos os dois.
+   * O link TEM que aparecer no texto: é o que a pessoa vê no Story. O sticker
+   * é alinhado sobre essa linha, então o que ela vê é exatamente o que ela
+   * toca — e o toque abre a URL.
+   *
+   * Se a URL já estiver no texto, devolve o texto como está. Se não estiver,
+   * acrescenta numa linha própria no fim.
    */
   function textForRender(text, link) {
-    const val = typeof text === "string" ? text : "";
+    const val = (typeof text === "string" ? text : "").trim();
     if (!link || !link.url) return val;
-    const found = findUrl(val);
-    if (!found || found.url !== link.url) return val;
-    return stripUrlAt(val, found);
+    const lines = val.split(/\r?\n/);
+    // já está no texto — escrita igual (comparação direta) ou de outro jeito
+    // (ex.: "loja.com/x" sem o https://, que normaliza para a mesma URL)
+    if (lines.some((line) => lineHasUrl(line, link.url))) return val;
+    return val ? val + "\n" + link.url : link.url;
+  }
+
+  /**
+   * A linha contém essa URL? Compara direto e também pela forma normalizada,
+   * para reconhecer "loja.com/x" quando o sticker guarda "https://loja.com/x".
+   */
+  function lineHasUrl(line, url) {
+    if (typeof line !== "string" || !url) return false;
+    if (line.includes(url)) return true;
+    const found = findUrl(line);
+    return !!(found && found.url === url);
   }
 
   /** Mantém o sticker dentro da faixa vertical que realmente recebe toque. */
@@ -383,6 +400,7 @@
     extractUrl,
     stripUrlAt,
     textForRender,
+    lineHasUrl,
     clampStickerY,
     buildLinkSticker,
     buildValidateReelUrlBody,

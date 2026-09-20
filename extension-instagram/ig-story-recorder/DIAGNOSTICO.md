@@ -69,8 +69,26 @@ dispositivo, o que é causa conhecida de sticker aceito e não renderizado.
 | 2 | `POST media/validate_reel_url/` antes do configure | `content.js` → `validateReelUrl` |
 | 3 | Payload atualizado (identidade, capabilities, transformação, edits) | `story-payload.js` → `buildConfigureBody` |
 | 4 | Campo "Link clicável" separado da legenda, com autodetecção | `content.js` → UI |
-| 5 | URL deixa de ser desenhada em pixels quando há sticker | `story-payload.js` → `textForRender` |
-| 6 | 44 testes de regressão (payload + fumaça de UI) | `tests/` |
+| 5 | URL é desenhada no texto e o sticker é alinhado sobre essa linha | `story-payload.js` → `textForRender`; `content.js` → `drawText` |
+| 6 | 56 testes de regressão (payload + alinhamento + fumaça de UI) | `tests/` |
+
+### 3.1 Por que o link continua sendo desenhado na imagem
+
+`caption` não é renderizado como hyperlink, mas o link precisa estar **visível**
+no Story. As duas coisas são resolvidas por mecanismos diferentes:
+
+- **visibilidade** → a URL é desenhada em pixels junto da legenda (azul e
+  sublinhada), como já acontecia na v3;
+- **clicabilidade** → o sticker (`tap_models`).
+
+Para que "ver" e "tocar" sejam a mesma coisa, `drawText` passou a devolver a
+posição vertical (0..1) da linha onde a URL foi desenhada, e o payload usa esse
+valor como `y` do sticker. Se a URL não estiver na legenda, ela é acrescentada
+numa linha própria — o sticker cai sobre ela.
+
+Quando a mídia **não** passa pelo canvas (envio direto, sem texto/proporção/
+música), não há linha desenhada: o sticker usa a posição da legenda como
+referência, clamada para a faixa segura.
 
 Estrutura do sticker enviado (derivada do comportamento do cliente nativo):
 
@@ -117,8 +135,9 @@ com sticker apontando para o post, ou direcionar para o link da bio.
 
 ## 5. Como validar de verdade (não automatizável)
 
-A suíte de testes cobre a montagem do payload, mas **a prova final depende de
-uma conta real**, porque o Instagram não oferece sandbox para endpoints
+A suíte de testes cobre a montagem do payload e o alinhamento do sticker (com
+um contexto de canvas simulado), mas **a prova final depende de uma conta
+real**, porque o Instagram não oferece sandbox para endpoints
 internos. Roteiro:
 
 1. Carregue a extensão e publique um Story de **foto** com o campo de link
